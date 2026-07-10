@@ -43,10 +43,10 @@
 # .idea/modules
 # *.iml
 # *.ipr
-
+venv
 # CMake
 cmake-build-*/
-
+__pycache__
 # Mongo Explorer plugin
 .idea/**/mongoSettings.xml
 
