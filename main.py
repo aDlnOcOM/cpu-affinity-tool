@@ -8,6 +8,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import uvicorn
 from fastapi.responses import FileResponse
+import sys
+import os
 
 app = FastAPI(title="CPU Affinity Management API")
 
@@ -21,8 +23,18 @@ class AffinityRequest(BaseModel):
 def get_cores_count():
     return psutil.cpu_count() or 1
 
+# --- Абсолютный путь ---
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 
 # --- API ЭНДПОИНТЫ ---
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse(resource_path("favicon.ico"))
 
 @app.get("/api/cores")
 def get_total_cores():
@@ -82,6 +94,7 @@ def set_affinity(data: AffinityRequest):
 
 # --- ФРОНТЕНД (Интерфейс) ---
 
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     """Отдает простую HTML-страницу с Tailwind CSS и JavaScript для реального времени."""
@@ -90,6 +103,7 @@ def index():
     <html lang="ru">
     <head>
         <meta charset="UTF-8">
+        <link rel="icon" href="/favicon.ico" type="image/x-icon">
         <title>CPU Affinity Web Tool</title>
         <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
         <style>
@@ -255,9 +269,7 @@ def index():
     </html>
     """
 
-@app.get("/favicon.ico")
-async def favicon():
-    return FileResponse("favicon.ico")
+
 def open_browser():
     time.sleep(2)
     webbrowser.open("http://127.0.0.1:8000")
