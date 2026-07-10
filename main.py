@@ -86,6 +86,7 @@ def get_processes(limit: int = 25):
 
 
 def set_affinity(pid: int, cores: list):
+
     """
     Привязывает процесс к указанным ядрам (CPU affinity).
 
@@ -93,6 +94,7 @@ def set_affinity(pid: int, cores: list):
     - Работает только если у пользователя есть права (обычно нужен администратор/root)
     - cores - список целых чисел [0, 1, 3] и т.д.
     """
+
     try:
         proc = psutil.Process(pid)  # Получаем объект процесса по PID
         proc.cpu_affinity(cores)  # Устанавливаем маску ядер
