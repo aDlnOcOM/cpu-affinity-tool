@@ -22,12 +22,12 @@ pip install -r requirements.txt
 ## Использование
 #### 1. Просмотр процессов
 ```bash 
-Bashpython main.py list
+python main.py list
 ```
 
 Или с указанием количества:
 ```bash 
-Bashpython main.py list --number 50
+python main.py list --number 50
 ```
 
 
