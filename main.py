@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import uvicorn
+from fastapi.responses import FileResponse
 
 app = FastAPI(title="CPU Affinity Management API")
 
@@ -254,7 +255,9 @@ def index():
     </html>
     """
 
-
+@app.get("/favicon.ico")
+async def favicon():
+    return FileResponse("favicon.ico")
 def open_browser():
     time.sleep(2)
     webbrowser.open("http://127.0.0.1:8000")
