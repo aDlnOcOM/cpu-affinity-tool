@@ -42,10 +42,3 @@ python main.py set 5678 0 1 3
 # Пример с PID explorer.exe
 python main.py set 2345 1
 ```
-
-
-Рекомендуемая команда для чистого EXE:
-
-```bash
-pyinstaller --onefile --console --clean --name "CPU_Affinity_Tool" main.py
-```
