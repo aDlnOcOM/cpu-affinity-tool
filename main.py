@@ -1,72 +1,92 @@
 import psutil
 import argparse
 import sys
-from typing import List
+import shlex
 
 
-def get_processes(limit: int = 30):
-    """Выводит список процессов"""
-    print(f"{'PID':<8} {'Name':<25} {'CPU%':<8} {'Affinity'}")
-    print("-" * 70)
+# Улучшенная псевдографика
+def print_header():
+    print("\n" + "╔" + "═" * 68 + "╗")
+    print("║" + " CPU AFFINITY TOOL ".center(68) + "║")
+    print("╚" + "═" * 68 + "╝")
+    print(f"  Всего ядер доступно: {psutil.cpu_count()}")
+
+
+def print_separator():
+    print("╟" + "─" * 68 + "╢")
+
+
+def get_processes(limit: int = 25):
+    print_header()
+    print(f"  {'PID':<8} {'NAME':<28} {'CPU%':<8} {'AFFINITY'}")
+    print_separator()
 
     processes = []
     for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'cpu_affinity']):
         try:
             info = proc.info
-            processes.append(info)
+            if info['name']:
+                processes.append(info)
         except:
             pass
 
     processes = sorted(processes, key=lambda x: x.get('cpu_percent') or 0, reverse=True)[:limit]
 
     for p in processes:
-        aff = p.get('cpu_affinity') or "N/A"
-        print(f"{p['pid']:<8} {p['name'][:24]:<25} {p.get('cpu_percent') or 0:<8.1f} {aff}")
+        aff = p.get('cpu_affinity')
+        aff_str = str(aff) if aff is not None else "N/A"
+        cpu = p.get('cpu_percent') or 0.0
+        print(f"  {p['pid']:<8} {p['name'][:27]:<28} {cpu:<8.1f} {aff_str}")
+
+    print_separator()
 
 
-def set_affinity(pid: int, cores: List[int]):
-    """Устанавливает affinity для процесса"""
+def set_affinity(pid: int, cores: list):
     try:
         proc = psutil.Process(pid)
-        old_aff = proc.cpu_affinity()
         proc.cpu_affinity(cores)
-        new_aff = proc.cpu_affinity()
-
-        print(f"[+] Успешно!")
-        print(f"Процесс: {proc.name()} (PID: {pid})")
-        print(f"Было: {old_aff}")
-        print(f"Стало: {new_aff}")
-    except psutil.NoSuchProcess:
-        print(f"[-] Процесс с PID {pid} не найден")
-    except psutil.AccessDenied:
-        print("[-]Нет прав доступа. Запустите от имени администратора.")
+        print(f"\n[✔] Успешно: Процесс {proc.name()} (PID: {pid}) привязан к ядрам {cores}")
     except Exception as e:
-        print(f"[-] Ошибка: {e}")
+        print(f"\n[✘] Ошибка: {e}")
+
+
+def show_help():
+    print("\nДоступные команды:")
+    print("  list [N]          - Список процессов (топ N)")
+    print("  set <PID> <cores> - Привязать процесс к ядрам (например: set 1234 0 1)")
+    print("  help              - Показать это меню")
+    print("  exit              - Выход из программы")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="CPU Affinity Tool")
-    subparsers = parser.add_subparsers(dest="command", help="Доступные команды")
+    print_header()
+    print("Интерактивный режим запущен. Введите 'help' для списка команд.")
 
-    # Команда 1: список процессов
-    list_parser = subparsers.add_parser("list", help="Показать процессы")
-    list_parser.add_argument("-n", "--number", type=int, default=30, help="Количество процессов")
+    while True:
+        try:
+            user_input = input("\nCPU-TOOL > ").strip()
+            if not user_input: continue
 
-    # Команда 2: установить affinity
-    set_parser = subparsers.add_parser("set", help="Установить affinity")
-    set_parser.add_argument("pid", type=int, help="PID процесса")
-    set_parser.add_argument("cores", type=int, nargs="+", help="Номера ядер (например: 0 1 2)")
+            parts = shlex.split(user_input)
+            cmd = parts[0].lower()
 
-    args = parser.parse_args()
-
-    if not args.command:
-        parser.print_help()
-        return
-
-    if args.command == "list":
-        get_processes(args.number)
-    elif args.command == "set":
-        set_affinity(args.pid, args.cores)
+            if cmd == "exit":
+                print("Завершение работы...")
+                break
+            elif cmd == "help":
+                show_help()
+            elif cmd == "list":
+                n = int(parts[1]) if len(parts) > 1 else 25
+                get_processes(n)
+            elif cmd == "set":
+                if len(parts) < 3:
+                    print("Ошибка: недостаточно аргументов для set")
+                else:
+                    set_affinity(int(parts[1]), [int(x) for x in parts[2:]])
+            else:
+                print("Неизвестная команда. Введите 'help'.")
+        except Exception as e:
+            print(f"Ошибка ввода: {e}")
 
 
 if __name__ == "__main__":
