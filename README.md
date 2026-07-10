@@ -19,7 +19,12 @@
 pip install -r requirements.txt
 ```
 
-## Использование
+### Вариант 2: EXE файл (в Release)
+```bash
+Для назначения на процесс ядер - запускать нужно от администратора/root
+```
+
+## Использование через Python
 #### 1. Просмотр процессов
 ```bash 
 python main.py list
@@ -41,4 +46,9 @@ python main.py set 5678 0 1 3
 
 # Пример с PID explorer.exe
 python main.py set 2345 1
+```
+
+## Использование через EXE-файл
+```bash
+Прописать help, где будут подробные инструкции.
 ```
