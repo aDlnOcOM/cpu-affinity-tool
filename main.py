@@ -1,160 +1,214 @@
-import psutil  # Библиотека для получения информации о процессах и системе
-import argparse  # Не используется в текущей версии (можно удалить)
-import sys
-import shlex  # Для безопасного разбора командной строки (учитывает кавычки)
-import time  # Для паузы между замерами CPU
+import psutil
+import webbrowser
+import threading
+import time
+from typing import List
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+import uvicorn
+
+app = FastAPI(title="CPU Affinity Management API")
 
 
-def print_header():
-    """Выводит заголовок инструмента."""
-    print("\n" + "╔" + "═" * 68 + "╗")
-    print("║" + " CPU AFFINITY TOOL ".center(68) + "║")
-    print("╚" + "═" * 68 + "╝")
-    # psutil.cpu_count() возвращает количество логических ядер (с учётом Hyper-Threading/SMT)
-    print(f"  Всего ядер доступно: {psutil.cpu_count()}")
+# Модель данных для изменения affinity
+class AffinityRequest(BaseModel):
+    pid: int
+    cores: List[int]
+def get_cores_count():
+    return psutil.cpu_count() or 1
 
 
-def print_separator():
-    """Печатает горизонтальную линию-разделитель в таблице."""
-    print("╟" + "─" * 68 + "╢")
+# --- API ЭНДПОИНТЫ ---
+
+@app.get("/api/cores")
+def get_total_cores():
+    """Возвращает количество доступных логических ядер."""
+    return {"total_cores": get_cores_count()}
 
 
+@app.get("/api/processes")
 def get_processes(limit: int = 25):
-    """
-    Выводит топ-N процессов по загрузке CPU.
-
-    Механизм:
-    1. Первый проход - запускаем cpu_percent() с interval=None для инициализации.
-    2. Небольшая пауза (time.sleep).
-    3. Второй проход - получаем реальные значения CPU за интервал.
-    Это стандартный приём psutil для корректного замера загрузки.
-    """
-    print_header()
-    print(f"  {'PID':<8} {'NAME':<28} {'CPU%':<8} {'AFFINITY'}")
-    print_separator()
-
-    num_cores = psutil.cpu_count() or 1  # Защита от гипотетического случая 0 ядер
+    """Возвращает топ-N процессов по загрузке CPU в формате JSON."""
+    num_cores = get_cores_count()
     proc_list = []
 
-    # Первый проход: инициализация счётчиков CPU
+    # Первый проход: инициализация счетчиков
     for proc in psutil.process_iter(['pid', 'name', 'cpu_affinity']):
         try:
-            # interval=None - не блокирует, просто подготавливает внутренние счётчики
             proc.cpu_percent(interval=None)
             proc_list.append(proc)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
-            # Процесс мог завершиться или у нас нет прав (обычно системные процессы)
             continue
 
-    time.sleep(0.1)  # Короткая пауза для накопления статистики
+    time.sleep(0.1)  # Короткая пауза для замера
 
     processes = []
     for proc in proc_list:
         try:
             raw_cpu = proc.cpu_percent(interval=None)
             info = proc.info
-            # Нормализация: psutil возвращает процент от всех ядер.
-            # Делим на количество ядер → получаем "среднюю" загрузку на одно ядро.
-            info['cpu_percent'] = raw_cpu / num_cores
+            # Нормализация загрузки на одно ядро
+            info['cpu_percent'] = round(raw_cpu / num_cores, 1)
+            # Если affinity равен None, значит процесс может использовать все ядра
+            if info['cpu_affinity'] is None:
+                info['cpu_affinity'] = list(range(num_cores))
             processes.append(info)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-    # Сортировка по убыванию загрузки CPU с помощью lambda-функции
-    # lambda x: x.get('cpu_percent') or 0  - анонимная функция, которая:
-    #   1. Берёт словарь процесса x
-    #   2. Достаёт ключ 'cpu_percent' (метод .get() возвращает None, если ключа нет)
-    #   3. or 0 - превращает None/False в 0 (защита от None)
-    # reverse=True - сортировка по убыванию
-
+    # Сортировка по убыванию CPU
     processes = sorted(processes, key=lambda x: x.get('cpu_percent') or 0, reverse=True)[:limit]
-
-    for p in processes:
-        aff = p.get('cpu_affinity')
-        # cpu_affinity() возвращает список номеров ядер или None (если не ограничен)
-        aff_str = str(aff) if aff is not None else "N/A"
-
-        cpu = p.get('cpu_percent') or 0.0
-
-        # Форматирование f-string:
-        # :<8   - выравнивание по левому краю, ширина поля 8 символов
-        # .1f   - число с плавающей точкой, 1 знак после запятой
-        # [<28] - ширина 28 символов, обрезаем имя до 27 символов + пробел
-        print(f"  {p['pid']:<8} {p['name'][:27]:<28} {cpu:<8.1f} {aff_str}")
-
-    print_separator()
+    return processes
 
 
-def set_affinity(pid: int, cores: list):
-
-    """
-    Привязывает процесс к указанным ядрам (CPU affinity).
-
-    Важно:
-    - Работает только если у пользователя есть права (обычно нужен администратор/root)
-    - cores - список целых чисел [0, 1, 3] и т.д.
-    """
-
+@app.post("/api/set_affinity")
+def set_affinity(data: AffinityRequest):
+    """Устанавливает маску ядер для процесса."""
     try:
-        proc = psutil.Process(pid)  # Получаем объект процесса по PID
-        proc.cpu_affinity(cores)  # Устанавливаем маску ядер
-        print(f"\n[✔] Успешно: Процесс {proc.name()} (PID: {pid}) привязан к ядрам {cores}")
+        proc = psutil.Process(data.pid)
+        proc.cpu_affinity(data.cores)
+        return {"status": "success", "message": f"Процесс {proc.name()} привязан к ядрам {data.cores}"}
     except psutil.NoSuchProcess:
-        print(f"\n[✘] Ошибка: Процесс с PID {pid} не найден")
+        raise HTTPException(status_code=404, detail="Процесс не найден")
     except psutil.AccessDenied:
-        print(f"\n[✘] Ошибка: Недостаточно прав для изменения affinity процесса {pid}")
+        raise HTTPException(status_code=403, detail="Недостаточно прав (запустите от Администратора/Root)")
     except Exception as e:
-        print(f"\n[✘] Ошибка: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-def show_help():
-    """Выводит справку по командам."""
-    print("\nДоступные команды:")
-    print("  list [N]          - Список процессов (топ N по CPU)")
-    print("  set <PID> <cores> - Привязать процесс к ядрам (например: set 1234 0 1 3)")
-    print("  help              - Показать это меню")
-    print("  exit              - Выход из программы")
+# --- ФРОНТЕНД (Интерфейс) ---
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    """Отдает простую HTML-страницу с Tailwind CSS и JavaScript для реального времени."""
+    return """
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <title>CPU Affinity Web Tool</title>
+        <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    </head>
+    <body class="bg-gray-900 text-gray-100 font-sans p-8">
+        <div class="max-w-5xl mx-auto">
+            <header class="mb-8 border-b border-gray-700 pb-4 flex justify-between items-center">
+                <h1 class="text-3xl font-bold text-teal-400">⚡ CPU Affinity Dashboard</h1>
+                <div class="text-sm text-gray-400">Всего ядер в системе: <span id="cores-count" class="font-bold text-white">...</span></div>
+            </header>
+
+            <div class="bg-gray-800 rounded-lg shadow-xl overflow-hidden">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="bg-gray-700 text-teal-300 uppercase text-sm tracking-wider">
+                            <th class="p-4">PID</th>
+                            <th class="p-4">Имя процесса</th>
+                            <th class="p-4">CPU %</th>
+                            <th class="p-4">Привязка к ядрам (Affinity)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="process-table" class="divide-y divide-gray-700">
+                        <tr>
+                            <td colspan="4" class="p-4 text-center text-gray-500">Загрузка процессов...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <script>
+            let totalCores = 0;
+
+            // Получаем количество ядер при загрузке
+            async function loadCores() {
+                const res = await fetch('/api/cores');
+                const data = await res.json();
+                totalCores = data.total_cores;
+                document.getElementById('cores-count').innerText = totalCores;
+            }
+
+            // Обновление списка процессов в реальном времени
+            async function updateProcesses() {
+                try {
+                    const res = await fetch('/api/processes');
+                    const processes = await res.json();
+                    const tbody = document.getElementById('process-table');
+                    tbody.innerHTML = '';
+
+                    processes.forEach(p => {
+                        const tr = document.createElement('tr');
+                        tr.className = "hover:bg-gray-750 transition-colors";
+
+                        // Создаем чекбоксы для каждого ядра
+                        let coreCheckboxes = '';
+                        for(let i = 0; i < totalCores; i++) {
+                            const isChecked = p.cpu_affinity.includes(i) ? 'checked' : '';
+                            coreCheckboxes += `
+                                <label class="inline-flex items-center mr-2 bg-gray-700 px-2 py-1 rounded text-xs cursor-pointer hover:bg-gray-600">
+                                    <input type="checkbox" data-pid="${p.pid}" data-core="${i}" ${isChecked} onchange="changeAffinity(this)" class="mr-1 accent-teal-400">
+                                    <span>${i}</span>
+                                </label>
+                            `;
+                        }
+
+                        tr.innerHTML = `
+                            <td class="p-4 font-mono text-gray-400">${p.pid}</td>
+                            <td class="p-4 font-semibold text-white">${p.name}</td>
+                            <td class="p-4 font-mono text-teal-400">${p.cpu_percent}%</td>
+                            <td class="p-4">${coreCheckboxes}</td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                } catch (err) {
+                    console.error("Ошибка обновления данных:", err);
+                }
+            }
+
+            // Отправка запроса на изменение Affinity
+            async function changeAffinity(checkbox) {
+                const pid = parseInt(checkbox.getAttribute('data-pid'));
+
+                // Собираем все выбранные чекбоксы для конкретного PID
+                const checkboxes = document.querySelectorAll(`input[data-pid="${pid}"]:checked`);
+                const cores = Array.from(checkboxes).map(cb => parseInt(cb.getAttribute('data-core')));
+
+                if (cores.length === 0) {
+                    alert("Процесс должен быть привязан хотя бы к одному ядру!");
+                    checkbox.checked = true;
+                    return;
+                }
+
+                const response = await fetch('/api/set_affinity', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pid, cores })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    alert(`Ошибка: ${errorData.detail}`);
+                    // Перезагружаем список, чтобы вернуть чекбоксы в исходное состояние
+                    updateProcesses();
+                }
+            }
+
+            // Инициализация
+            loadCores().then(() => {
+                updateProcesses();
+                // Автоматическое обновление каждые 3 секунды (Реалтайм)
+                setInterval(updateProcesses, 3000);
+            });
+        </script>
+    </body>
+    </html>
+    """
 
 
-def main():
-    print_header()
-    print("Интерактивный режим запущен. Введите 'help' для списка команд.")
-
-    while True:
-        try:
-            user_input = input("\nCPU-TOOL > ").strip()
-            if not user_input:
-                continue
-
-            # shlex.split() - безопасно разбирает строку, учитывая кавычки
-            # Пример: set 1234 "0 1 2" → ['set', '1234', '0 1 2'] (не разобьёт пробелы внутри кавычек)
-            parts = shlex.split(user_input)
-            cmd = parts[0].lower()
-
-            if cmd == "exit":
-                print("Завершение работы...")
-                break
-            elif cmd == "help":
-                show_help()
-            elif cmd == "list":
-                # Тернарный оператор для удобного получения параметра
-                n = int(parts[1]) if len(parts) > 1 else 25
-                get_processes(n)
-            elif cmd == "set":
-                if len(parts) < 3:
-                    print("Ошибка: недостаточно аргументов для set")
-                else:
-                    # Преобразуем все аргументы после PID в список целых чисел
-                    set_affinity(int(parts[1]), [int(x) for x in parts[2:]])
-            else:
-                print("Неизвестная команда. Введите 'help'.")
-        except ValueError as e:
-            # Ошибки преобразования типов (например, невалидный PID)
-            print(f"Ошибка ввода (некорректное число): {e}")
-        except Exception as e:
-            print(f"Неожиданная ошибка: {e}")
+def open_browser():
+    time.sleep(2)  # даём серверу запуститься
+    webbrowser.open("http://127.0.0.1:8000")
 
 
 if __name__ == "__main__":
-    # Запускаем main() только если файл запущен напрямую
-    main()
+    threading.Thread(target=open_browser, daemon=True).start()
+    uvicorn.run("main:app", host="127.0.0.1", port=8000)

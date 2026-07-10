@@ -1,1 +1,4 @@
-psutil
+fastapi
+uvicorn[standard]
+pydantic
+starlette
