@@ -7,7 +7,7 @@ import os
 import logging
 import json
 import platform
-from typing import List
+from typing import List, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
@@ -47,7 +47,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("cpu-affinity")
 
-DEFAULT_CONFIG: Dict[str, Any] = {
+DEFAULT_CONFIG: dict[str, Any] = {
     "presets": {
         "Gaming (первые 4)": [0, 1, 2, 3],
         "Background (последние 4)": [],  # Заполняется динамически
@@ -57,7 +57,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 
-def load_config() -> Dict[str, Any]:
+def load_config() -> dict[str, Any]:
     """Загружает конфигурацию из JSON или возвращает дефолт."""
     if os.path.exists(CONFIG_FILE):
         try:
@@ -71,7 +71,7 @@ def load_config() -> Dict[str, Any]:
     return DEFAULT_CONFIG.copy()
 
 
-def save_config(config_data: Dict[str, Any]) -> None:
+def save_config(config_data: dict[str, Any]) -> None:
     """Сохраняет конфигурацию в JSON."""
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
