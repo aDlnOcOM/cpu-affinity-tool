@@ -16,8 +16,13 @@ import uvicorn
 # =======================
 # КОНФИГ И ЛОГИРОВАНИЕ
 # =======================
-def get_app_dir():
-    # Используем %APPDATA% для Windows или ~ для Linux/macOS
+
+def get_app_dir() -> str:
+    """
+    Возвращает директорию для хранения конфигов и логов.
+    Windows: %APPDATA%\.cpu-affinity-tool
+    Linux/macOS: ~/.cpu-affinity-tool
+    """
     if platform.system() == "Windows":
         base_dir = os.environ.get("APPDATA", os.path.expanduser("~"))
     else:
@@ -26,11 +31,12 @@ def get_app_dir():
     os.makedirs(app_dir, exist_ok=True)
     return app_dir
 
+
 APP_DIR = get_app_dir()
 LOG_FILE = os.path.join(APP_DIR, "app.log")
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 
-# Настройка логирования (в консоль и в файл)
+# Настройка логирования (в консоль + файл)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -41,30 +47,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger("cpu-affinity")
 
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: Dict[str, Any] = {
     "presets": {
-        "Gaming (First 4)": [0, 1, 2, 3],
-        "Background (Last 4)": [] # Заполняется динамически
+        "Gaming (первые 4)": [0, 1, 2, 3],
+        "Background (последние 4)": [],  # Заполняется динамически
+        "All cores": []  # Заполнится позже
     },
     "auto_apply_rules": {}
 }
 
-def load_config():
+
+def load_config() -> Dict[str, Any]:
+    """Загружает конфигурацию из JSON или возвращает дефолт."""
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                config = json.load(f)
+                logger.info("Конфигурация успешно загружена")
+                return config
         except Exception as e:
             logger.error(f"Ошибка чтения конфига: {e}")
-    return DEFAULT_CONFIG
+    logger.info("Используется конфигурация по умолчанию")
+    return DEFAULT_CONFIG.copy()
 
-def save_config(config_data):
+
+def save_config(config_data: Dict[str, Any]) -> None:
+    """Сохраняет конфигурацию в JSON."""
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config_data, f, indent=4, ensure_ascii=False)
+        logger.debug("Конфигурация сохранена")
     except Exception as e:
         logger.error(f"Ошибка сохранения конфига: {e}")
 
+
+# Загружаем конфиг
 APP_CONFIG = load_config()
 
 # =======================
