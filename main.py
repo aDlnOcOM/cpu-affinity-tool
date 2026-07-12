@@ -68,22 +68,23 @@ def save_config(config_data):
 APP_CONFIG = load_config()
 
 # =======================
-#
+# Динамическое дополнение пресета Background в зависимости от количества ядер
 # =======================
+
+num_cores = psutil.cpu_count() or 1
+if not APP_CONFIG["presets"]["Background (Last 4)"]:
+    APP_CONFIG["presets"]["Background (Last 4)"] = list(range(max(0, num_cores - 4), num_cores))
 
 app = FastAPI(title="CPU Affinity Management API")
 
-
-# Модель данных для изменения affinity
 class AffinityRequest(BaseModel):
     pid: int
     cores: List[int]
 
+class RuleRequest(BaseModel):
+    name: str
+    cores: List[int]
 
-def get_cores_count():
-    return psutil.cpu_count() or 1
-
-# --- Абсолютный путь ---
 def resource_path(relative_path):
     try:
         base_path = sys._MEIPASS
@@ -91,24 +92,58 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# --- API ЭНДПОИНТЫ ---
+# =======================
+# ИНИЦИАЛИЗАЦИЯ И АВТО-ПРАВИЛА
+# =======================
+
+@app.on_event("startup")
+def apply_saved_rules():
+    logger.info(f"Рабочая директория (Конфиги/Логи): {APP_DIR}")
+    rules = APP_CONFIG.get("auto_apply_rules", {})
+    if not rules:
+        return
+    logger.info("Применение сохраненных правил affinity при старте...")
+    for proc in psutil.process_iter(['name']):
+        try:
+            name = proc.info['name']
+            if name in rules:
+                proc.cpu_affinity(rules[name])
+                logger.info(f"Авто-применение: {name} -> {rules[name]}")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+
+# =======================
+# API ЭНДПОИНТЫ
+# =======================
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
     return FileResponse(resource_path("favicon.ico"))
 
+
+@app.get("/api/config")
+def get_config_api():
+    """Отдает пресеты и правила для отрисовки интерфейса."""
+    return APP_CONFIG
+
+
+@app.post("/api/save_rule")
+def save_rule(data: RuleRequest):
+    """Сохраняет правило авто-применения для процесса."""
+    APP_CONFIG.setdefault("auto_apply_rules", {})[data.name] = data.cores
+    save_config(APP_CONFIG)
+    logger.info(f"Сохранено правило: {data.name} -> {data.cores}")
+    return {"status": "success", "message": "Правило сохранено"}
+
+
 @app.get("/api/cores")
 def get_total_cores():
-    """Возвращает количество доступных логических ядер."""
-    return {"total_cores": get_cores_count()}
+    return {"total_cores": num_cores}
 
 
 @app.get("/api/processes")
-def get_processes(limit: int = 100):  # Увеличили лимит до 100, чтобы замороженные процессы не пропадали
-    """Возвращает топ-N процессов по загрузке CPU в формате JSON."""
-    num_cores = get_cores_count()
+def get_processes(limit: int = 100):
     proc_list = []
-
-    # Первый проход: инициализация счетчиков
     for proc in psutil.process_iter(['pid', 'name', 'cpu_affinity']):
         try:
             proc.cpu_percent(interval=None)
@@ -116,44 +151,44 @@ def get_processes(limit: int = 100):  # Увеличили лимит до 100, 
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-    time.sleep(0.1)  # Короткая пауза для замера и далее нормализации
+    time.sleep(0.1)
 
     processes = []
     for proc in proc_list:
         try:
             raw_cpu = proc.cpu_percent(interval=None)
             info = proc.info
-            # Нормализация загрузки на одно ядро
             info['cpu_percent'] = round(raw_cpu / num_cores, 1)
-            # Если привязка None, значит процесс может использовать все ядра
             if info['cpu_affinity'] is None:
                 info['cpu_affinity'] = list(range(num_cores))
             processes.append(info)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-    # Сортировка по убыванию CPU (Top sort)
     processes = sorted(processes, key=lambda x: x.get('cpu_percent') or 0, reverse=True)[:limit]
     return processes
 
 
 @app.post("/api/set_affinity")
 def set_affinity(data: AffinityRequest):
-    """Устанавливает маску ядер для процесса."""
     try:
         proc = psutil.Process(data.pid)
         proc.cpu_affinity(data.cores)
+        logger.info(f"Изменен affinity: {proc.name()} (PID: {data.pid}) -> {data.cores}")
         return {"status": "success", "message": f"Процесс {proc.name()} привязан к ядрам {data.cores}"}
     except psutil.NoSuchProcess:
+        logger.error(f"Процесс {data.pid} не найден")
         raise HTTPException(status_code=404, detail="Процесс не найден")
     except psutil.AccessDenied:
+        logger.warning(f"Нет прав для изменения {data.pid}")
         raise HTTPException(status_code=403, detail="Недостаточно прав (запустите от Администратора/Root)")
     except Exception as e:
+        logger.error(f"Ошибка изменения affinity: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
-
+# =======================
 # --- ФРОНТЕНД (Веб ,hfepth) ---
-
+# =======================
 
 @app.get("/", response_class=HTMLResponse)
 def index():
