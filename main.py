@@ -85,24 +85,35 @@ def save_config(config_data: Dict[str, Any]) -> None:
 APP_CONFIG = load_config()
 
 # =======================
-# Динамическое дополнение пресета Background в зависимости от количества ядер
+# ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И ИНИЦИАЛИЗАЦИЯ
 # =======================
 
-num_cores = psutil.cpu_count() or 1
-if not APP_CONFIG["presets"]["Background (Last 4)"]:
-    APP_CONFIG["presets"]["Background (Last 4)"] = list(range(max(0, num_cores - 4), num_cores))
+num_cores = psutil.cpu_count(logical=True) or 1
+
+# Динамическое заполнение пресетов
+if not APP_CONFIG["presets"].get("Background (последние 4)"):
+    APP_CONFIG["presets"]["Background (последние 4)"] = list(range(max(0, num_cores - 4), num_cores))
+
+if not APP_CONFIG["presets"].get("All cores"):
+    APP_CONFIG["presets"]["All cores"] = list(range(num_cores))
 
 app = FastAPI(title="CPU Affinity Management API")
 
+
 class AffinityRequest(BaseModel):
+    """Модель для изменения affinity."""
     pid: int
     cores: List[int]
 
+
 class RuleRequest(BaseModel):
+    """Модель для сохранения правила авто-применения."""
     name: str
     cores: List[int]
 
-def resource_path(relative_path):
+
+def resource_path(relative_path: str) -> str:
+    """Получает путь к ресурсам (работает в PyInstaller)."""
     try:
         base_path = sys._MEIPASS
     except Exception:
