@@ -2,14 +2,74 @@ import psutil
 import webbrowser
 import threading
 import time
-from typing import List
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
-import uvicorn
-from fastapi.responses import FileResponse
 import sys
 import os
+import logging
+import json
+import platform
+from typing import List
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse, FileResponse
+from pydantic import BaseModel
+import uvicorn
+
+# =======================
+# КОНФИГ И ЛОГИРОВАНИЕ
+# =======================
+def get_app_dir():
+    # Используем %APPDATA% для Windows или ~ для Linux/macOS
+    if platform.system() == "Windows":
+        base_dir = os.environ.get("APPDATA", os.path.expanduser("~"))
+    else:
+        base_dir = os.path.expanduser("~")
+    app_dir = os.path.join(base_dir, ".cpu-affinity-tool")
+    os.makedirs(app_dir, exist_ok=True)
+    return app_dir
+
+APP_DIR = get_app_dir()
+LOG_FILE = os.path.join(APP_DIR, "app.log")
+CONFIG_FILE = os.path.join(APP_DIR, "config.json")
+
+# Настройка логирования (в консоль и в файл)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger("cpu-affinity")
+
+DEFAULT_CONFIG = {
+    "presets": {
+        "Gaming (First 4)": [0, 1, 2, 3],
+        "Background (Last 4)": [] # Заполняется динамически
+    },
+    "auto_apply_rules": {}
+}
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Ошибка чтения конфига: {e}")
+    return DEFAULT_CONFIG
+
+def save_config(config_data):
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения конфига: {e}")
+
+APP_CONFIG = load_config()
+
+# =======================
+#
+# =======================
 
 app = FastAPI(title="CPU Affinity Management API")
 
@@ -56,7 +116,7 @@ def get_processes(limit: int = 100):  # Увеличили лимит до 100, 
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-    time.sleep(0.1)  # Короткая пауза для замера
+    time.sleep(0.1)  # Короткая пауза для замера и далее нормализации
 
     processes = []
     for proc in proc_list:
@@ -65,14 +125,14 @@ def get_processes(limit: int = 100):  # Увеличили лимит до 100, 
             info = proc.info
             # Нормализация загрузки на одно ядро
             info['cpu_percent'] = round(raw_cpu / num_cores, 1)
-            # Если affinity равен None, значит процесс может использовать все ядра
+            # Если привязка None, значит процесс может использовать все ядра
             if info['cpu_affinity'] is None:
                 info['cpu_affinity'] = list(range(num_cores))
             processes.append(info)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-    # Сортировка по убыванию CPU
+    # Сортировка по убыванию CPU (Top sort)
     processes = sorted(processes, key=lambda x: x.get('cpu_percent') or 0, reverse=True)[:limit]
     return processes
 
@@ -92,7 +152,7 @@ def set_affinity(data: AffinityRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# --- ФРОНТЕНД (Интерфейс) ---
+# --- ФРОНТЕНД (Веб ,hfepth) ---
 
 
 @app.get("/", response_class=HTMLResponse)
