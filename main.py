@@ -2,539 +2,531 @@ import psutil
 import webbrowser
 import threading
 import time
-import sys
-import os
-import logging
-import json
-import platform
-from typing import List, Any
+from typing import List, Dict, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 import uvicorn
+import sys
+import os
+import json
+import logging
+from contextlib import asynccontextmanager
 
-# =======================
-# КОНФИГ И ЛОГИРОВАНИЕ
-# =======================
 
 def get_app_dir() -> str:
-    """
-    Возвращает директорию для хранения конфигов и логов.
-    Windows: %APPDATA%\.cpu-affinity-tool
-    Linux/macOS: ~/.cpu-affinity-tool
-    """
-    if platform.system() == "Windows":
-        base_dir = os.environ.get("APPDATA", os.path.expanduser("~"))
+    if os.name == 'nt':
+        base_dir = os.environ.get('APPDATA', os.path.expanduser('~'))
     else:
-        base_dir = os.path.expanduser("~")
-    app_dir = os.path.join(base_dir, ".cpu-affinity-tool")
+        base_dir = os.path.expanduser('~')
+    app_dir = os.path.join(base_dir, '.cpu-affinity-tool')
     os.makedirs(app_dir, exist_ok=True)
     return app_dir
 
 
 APP_DIR = get_app_dir()
-LOG_FILE = os.path.join(APP_DIR, "app.log")
-CONFIG_FILE = os.path.join(APP_DIR, "config.json")
+LOG_FILE = os.path.join(APP_DIR, 'app.log')
+CONFIG_FILE = os.path.join(APP_DIR, 'config.json')
 
-# Настройка логирования (в консоль + файл)
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout)
-    ]
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.FileHandler(LOG_FILE, encoding='utf-8'), logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("cpu-affinity")
+logger = logging.getLogger('cpu-affinity')
 
-DEFAULT_CONFIG: dict[str, Any] = {
-    "presets": {
-        "Gaming (первые 4)": [0, 1, 2, 3],
-        "Background (последние 4)": [],  # Заполняется динамически
-        "All cores": []  # Заполнится позже
+DEFAULT_CONFIG: Dict[str, Any] = {
+    'presets': {
+        'Gaming cores 0-7': list(range(0, 8)),
+        'Background cores 8-15': list(range(8, 16)),
+        'All cores': []
     },
-    "auto_apply_rules": {}
+    'auto_apply_rules': {},
+    'theme': 'dark'
 }
 
 
-def load_config() -> dict[str, Any]:
-    """Загружает конфигурацию из JSON или возвращает дефолт."""
+def get_cores_count() -> int:
+    return psutil.cpu_count(logical=True) or 1
+
+
+def sanitize_cores(cores: List[int]) -> List[int]:
+    max_cores = get_cores_count()
+    return sorted({c for c in cores if isinstance(c, int) and 0 <= c < max_cores})
+
+
+def load_config() -> Dict[str, Any]:
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     if os.path.exists(CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                config = json.load(f)
-                logger.info("Конфигурация успешно загружена")
-                return config
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    cfg.update({k: v for k, v in loaded.items() if k != 'presets'})
+                    if isinstance(loaded.get('presets'), dict):
+                        cfg['presets'].update(loaded['presets'])
         except Exception as e:
-            logger.error(f"Ошибка чтения конфига: {e}")
-    logger.info("Используется конфигурация по умолчанию")
-    return DEFAULT_CONFIG.copy()
+            logger.error(f'Ошибка чтения конфига: {e}')
+    max_cores = get_cores_count()
+    if not cfg['presets'].get('All cores'):
+        cfg['presets']['All cores'] = list(range(max_cores))
+    return cfg
 
 
-def save_config(config_data: dict[str, Any]) -> None:
-    """Сохраняет конфигурацию в JSON."""
+def save_config(config_data: Dict[str, Any]) -> None:
     try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(config_data, f, indent=4, ensure_ascii=False)
-        logger.debug("Конфигурация сохранена")
     except Exception as e:
-        logger.error(f"Ошибка сохранения конфига: {e}")
+        logger.error(f'Ошибка сохранения конфига: {e}')
 
 
-# Загружаем конфиг
 APP_CONFIG = load_config()
-
-# =======================
-# ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И ИНИЦИАЛИЗАЦИЯ
-# =======================
-
-num_cores = psutil.cpu_count(logical=True) or 1
-
-# Динамическое заполнение пресетов
-if not APP_CONFIG["presets"].get("Background (последние 4)"):
-    APP_CONFIG["presets"]["Background (последние 4)"] = list(range(max(0, num_cores - 4), num_cores))
-
-if not APP_CONFIG["presets"].get("All cores"):
-    APP_CONFIG["presets"]["All cores"] = list(range(num_cores))
-
-app = FastAPI(title="CPU Affinity Management API")
 
 
 class AffinityRequest(BaseModel):
-    """Модель для изменения affinity."""
     pid: int
     cores: List[int]
 
 
 class RuleRequest(BaseModel):
-    """Модель для сохранения правила авто-применения."""
     name: str
     cores: List[int]
 
 
+class ThemeRequest(BaseModel):
+    theme: str
+
+
+class PresetRequest(BaseModel):
+    name: str
+    cores: List[int]
+
+
+class SearchRequest(BaseModel):
+    query: str = ''
+
+
 def resource_path(relative_path: str) -> str:
-    """Получает путь к ресурсам (работает в PyInstaller)."""
     try:
         base_path = sys._MEIPASS
     except Exception:
-        base_path = os.path.abspath(".")
+        base_path = os.path.abspath('.')
     return os.path.join(base_path, relative_path)
 
-# =======================
-# STARTUP EVENT — АВТО-ПРИМЕНЕНИЕ ПРАВИЛ
-# =======================
 
-@app.on_event("startup")
-async def startup_event():
-    """При старте приложения применяем сохранённые правила."""
-    logger.info(f"Запуск приложения. Рабочая директория: {APP_DIR}")
-    logger.info(f"Количество ядер: {num_cores}")
-
-    rules = APP_CONFIG.get("auto_apply_rules", {})
-    if not rules:
-        logger.info("Нет сохранённых правил авто-применения")
-        return
-
-    logger.info(f"Применяем {len(rules)} сохранённых правил...")
-    applied_count = 0
-
-    for proc in psutil.process_iter(['name', 'pid']):
-        try:
-            name = proc.info['name']
-            if name in rules:
-                cores = rules[name]
-                if cores:  # Проверяем, что список не пустой
-                    proc.cpu_affinity(cores)
-                    logger.info(f"Авто-применение: {name} (PID {proc.info['pid']}) -> {cores}")
-                    applied_count += 1
-        except (psutil.NoSuchProcess, psutil.AccessDenied, Exception) as e:
-            continue  # Тихо пропускаем
-
-    logger.info(f"Авто-применение завершено. Успешно: {applied_count}")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info(f'Запуск. Директория: {APP_DIR} | Ядер: {get_cores_count()}')
+    rules = APP_CONFIG.get('auto_apply_rules', {}) or {}
+    applied = 0
+    if rules:
+        for proc in psutil.process_iter(['name', 'pid']):
+            try:
+                if proc.info.get('name') in rules:
+                    cores = sanitize_cores(rules[proc.info['name']])
+                    if cores:
+                        proc.cpu_affinity(cores)
+                        applied += 1
+                        logger.info(f"Авто-применено: {proc.info.get('name')} -> {cores}")
+            except Exception as e:
+                logger.debug(f'Auto-apply skipped: {e}')
+    if rules:
+        logger.info(f'Авто-применено правил: {applied}')
+    yield
+    logger.info('Приложение остановлено')
 
 
-# =======================
-# API ЭНДПОИНТЫ
-# =======================
+app = FastAPI(title='CPU Affinity Management API', lifespan=lifespan)
 
-@app.get("/favicon.ico", include_in_schema=False)
+
+@app.get('/favicon.ico', include_in_schema=False)
 async def favicon():
-    return FileResponse(resource_path("favicon.ico"))
+    return FileResponse(resource_path('favicon.ico'))
 
 
-@app.get("/api/config")
+@app.get('/api/config')
 def get_config_api():
-    """Возвращает текущие пресеты и правила для фронтенда."""
     return APP_CONFIG
 
 
-@app.post("/api/save_rule")
-def save_rule(data: RuleRequest):
-    """Сохраняет новое правило авто-применения."""
-    if not data.cores:
-        raise HTTPException(status_code=400, detail="Список ядер не может быть пустым")
-
-    APP_CONFIG.setdefault("auto_apply_rules", {})[data.name] = data.cores
-    save_config(APP_CONFIG)
-    logger.info(f"Сохранено правило для {data.name}: {data.cores}")
-    return {"status": "success", "message": f"Правило для {data.name} сохранено"}
-
-
-@app.get("/api/cores")
+@app.get('/api/cores')
 def get_total_cores():
-    """Возвращает количество логических ядер."""
-    return {"total_cores": num_cores}
+    return {'total_cores': get_cores_count()}
 
 
-@app.get("/api/processes")
-def get_processes(limit: int = 150):
-    """
-    Возвращает список процессов с CPU% и affinity.
-    Увеличен лимит + улучшена производительность.
-    """
+@app.get('/api/presets')
+def get_presets():
+    return APP_CONFIG.get('presets', {})
+
+
+@app.post('/api/presets')
+def save_preset(data: PresetRequest):
+    cores = sanitize_cores(data.cores)
+    if not cores:
+        raise HTTPException(status_code=400, detail='Пустой или некорректный набор ядер')
+    APP_CONFIG.setdefault('presets', {})[data.name] = cores
+    save_config(APP_CONFIG)
+    logger.info(f'Пресет сохранён: {data.name} -> {cores}')
+    return {'status': 'success'}
+
+
+@app.post('/api/theme')
+def set_theme(data: ThemeRequest):
+    if data.theme not in ('dark', 'light'):
+        raise HTTPException(status_code=400, detail='Некорректная тема')
+    APP_CONFIG['theme'] = data.theme
+    save_config(APP_CONFIG)
+    logger.info(f'Тема изменена: {data.theme}')
+    return {'status': 'success', 'theme': data.theme}
+
+
+@app.post('/api/save_rule')
+def save_rule(data: RuleRequest):
+    cores = sanitize_cores(data.cores)
+    if not cores:
+        raise HTTPException(status_code=400, detail='Список ядер не может быть пустым')
+    APP_CONFIG.setdefault('auto_apply_rules', {})[data.name] = cores
+    save_config(APP_CONFIG)
+    logger.info(f'Правило сохранено: {data.name} -> {cores}')
+    return {'status': 'success'}
+
+
+@app.get('/api/processes')
+def get_processes(limit: int = 150, q: str = '', sort_by: str = 'cpu'):
+    num_cores = get_cores_count()
     proc_list = []
+    ql = q.strip().lower()
     for proc in psutil.process_iter(['pid', 'name', 'cpu_affinity']):
         try:
             proc.cpu_percent(interval=None)
             proc_list.append(proc)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except Exception:
             continue
-
-    # Короткая пауза для точного замера CPU
     time.sleep(0.08)
-
     processes = []
     for proc in proc_list:
         try:
-            raw_cpu = proc.cpu_percent(interval=None)
+            raw = proc.cpu_percent(interval=None)
             info = proc.info
-            info['cpu_percent'] = round(raw_cpu / num_cores if num_cores > 0 else raw_cpu, 1)
-
-            # Нормализация affinity
-            if info['cpu_affinity'] is None:
+            info['cpu_percent'] = round(raw / num_cores if num_cores > 0 else raw, 1)
+            if info.get('cpu_affinity') is None:
                 info['cpu_affinity'] = list(range(num_cores))
+            if ql:
+                name = str(info.get('name', '')).lower()
+                pid = str(info.get('pid', ''))
+                cpu = str(info.get('cpu_percent', ''))
+                if ql not in name and ql not in pid and ql not in cpu:
+                    continue
             processes.append(info)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except Exception:
             continue
+    if sort_by == 'pid':
+        processes.sort(key=lambda x: x.get('pid') or 0)
+    elif sort_by == 'name':
+        processes.sort(key=lambda x: (x.get('name') or '').lower())
+    elif sort_by == 'cpu':
+        processes.sort(key=lambda x: x.get('cpu_percent') or 0, reverse=True)
+    return processes[:limit]
 
-    # Сортировка по CPU
-    processes = sorted(processes, key=lambda x: x.get('cpu_percent') or 0, reverse=True)[:limit]
-    return processes
 
-
-@app.post("/api/set_affinity")
+@app.post('/api/set_affinity')
 def set_affinity(data: AffinityRequest):
-    """Устанавливает affinity для процесса."""
-    if not data.cores:
-        raise HTTPException(status_code=400, detail="Должен быть выбран хотя бы один core")
-
+    cores = sanitize_cores(data.cores)
+    if not cores:
+        raise HTTPException(status_code=400, detail='Выберите хотя бы одно корректное ядро')
     try:
         proc = psutil.Process(data.pid)
-        proc.cpu_affinity(data.cores)
-        logger.info(f"Изменён affinity: {proc.name()} (PID: {data.pid}) -> {data.cores}")
-        return {"status": "success", "message": f"Процесс {proc.name()} привязан к {data.cores}"}
+        proc.cpu_affinity(cores)
+        logger.info(f'Affinity изменён: {proc.name()}({data.pid}) -> {cores}')
+        return {'status': 'success', 'message': f'Процесс {proc.name()} привязан к ядрам {cores}'}
     except psutil.NoSuchProcess:
-        logger.warning(f"Процесс {data.pid} не найден")
-        raise HTTPException(status_code=404, detail="Процесс не найден")
+        raise HTTPException(status_code=404, detail='Процесс не найден')
     except psutil.AccessDenied:
-        logger.warning(f"Нет прав для PID {data.pid}")
-        raise HTTPException(status_code=403, detail="Запустите от имени администратора/root")
+        raise HTTPException(status_code=403, detail='Недостаточно прав (запустите от Администратора/Root)')
     except Exception as e:
-        logger.error(f"Неожиданная ошибка: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
-# =======================
-# --- ФРОНТЕНД (Веб ,hfepth) ---
-# =======================
 
-@app.get("/", response_class=HTMLResponse)
+@app.get('/', response_class=HTMLResponse)
 def index():
-    """Отдаёт основной HTML-интерфейс."""
-    return """
-<!DOCTYPE html>
-<html lang="ru" class="dark">
-<head>
-    <meta charset="UTF-8">
-    <link rel="icon" href="/favicon.ico" type="image/x-icon">
-    <title>CPU Affinity Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <style>
-        .cores-scroll::-webkit-scrollbar { height: 6px; }
-        .cores-scroll::-webkit-scrollbar-track { background: transparent; }
-        .cores-scroll::-webkit-scrollbar-thumb { background-color: #6b7280; border-radius: 10px; }
-        .cores-scroll::-webkit-scrollbar-thumb:hover { background-color: #9ca3af; }
-        .process-row { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
-    </style>
-</head>
-<body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans p-6 transition-colors duration-300">
-    <div class="max-w-7xl mx-auto">
-        <header class="mb-8 border-b border-gray-300 dark:border-gray-700 pb-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div>
-                <h1 class="text-4xl font-bold text-teal-600 dark:text-teal-400 flex items-center gap-3">
-                    ⚡ CPU Affinity Dashboard
-                </h1>
-                <p class="text-gray-500 dark:text-gray-400 text-sm mt-1">Управление привязкой процессов к ядрам</p>
-            </div>
-            <div class="flex items-center gap-4">
-                <div class="text-sm text-gray-600 dark:text-gray-400">
-                    Ядер: <span id="cores-count" class="font-mono font-bold text-gray-900 dark:text-white">...</span>
+    theme = APP_CONFIG.get('theme', 'dark')
+    return f"""
+    <!DOCTYPE html>
+    <html lang='ru'>
+    <head>
+        <meta charset='UTF-8'>
+        <link rel='icon' href='/favicon.ico' type='image/x-icon'>
+        <title>CPU Affinity Web Tool</title>
+        <script src='https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4'></script>
+        <style>
+            .cores-scroll::-webkit-scrollbar {{ height: 6px; }}
+            .cores-scroll::-webkit-scrollbar-track {{ background: transparent; }}
+            .cores-scroll::-webkit-scrollbar-thumb {{ background-color: #4b5563; border-radius: 10px; }}
+            .cores-scroll::-webkit-scrollbar-thumb:hover {{ background-color: #6b7280; }}
+        </style>
+    </head>
+    <body id='app-body' class='font-sans p-8'>
+        <div class='max-w-6xl mx-auto'>
+            <header class='mb-6 border-b pb-4 flex flex-wrap gap-3 justify-between items-center'>
+                <div>
+                    <h1 class='text-3xl font-bold text-teal-400'>⚡ CPU Affinity Dashboard</h1>
+                    <div class='text-sm opacity-80'>Всего ядер в системе: <span id='cores-count' class='font-bold'>...</span></div>
                 </div>
-                <button onclick="toggleTheme()" 
-                        class="px-4 py-2 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl shadow-sm border border-gray-200 dark:border-gray-600 flex items-center gap-2 text-sm font-medium transition-all">
-                    🌓 Переключить тему
-                </button>
+                <div class='flex flex-wrap items-center gap-2'>
+                    <input id='searchBox' oninput='updateProcesses()' placeholder='Поиск: имя, PID, CPU%' class='px-3 py-2 rounded border bg-transparent outline-none min-w-64'>
+                    <select id='sortBy' onchange='updateProcesses()' class='px-3 py-2 rounded border bg-transparent'>
+                        <option value='cpu'>CPU%</option>
+                        <option value='pid'>PID</option>
+                        <option value='name'>Имя</option>
+                    </select>
+                    <select id='themeSelect' onchange='setTheme(this.value)' class='px-3 py-2 rounded border bg-transparent'>
+                        <option value='dark' {'selected' if theme == 'dark' else ''}>Dark</option>
+                        <option value='light' {'selected' if theme == 'light' else ''}>Light</option>
+                    </select>
+                </div>
+            </header>
+
+            <div class='mb-4 flex flex-wrap gap-2 items-center'>
+                <input id='presetName' placeholder='Имя пресета' class='px-3 py-2 rounded border bg-transparent'>
+                <button onclick='saveCurrentPreset()' class='px-3 py-2 rounded bg-teal-600 hover:bg-teal-500 text-white'>Сохранить пресет</button>
+                <select id='presetSelect' class='px-3 py-2 rounded border bg-transparent'></select>
+                <button onclick='applyPreset()' class='px-3 py-2 rounded bg-sky-600 hover:bg-sky-500 text-white'>Применить пресет</button>
             </div>
-        </header>
 
-        <!-- Фильтры -->
-        <div class="mb-6 flex flex-wrap gap-4 bg-white dark:bg-gray-800 p-5 rounded-2xl shadow">
-            <input type="text" id="search-input" 
-                   placeholder="🔍 Поиск по имени процесса или PID..." 
-                   class="flex-1 min-w-[280px] px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 transition-all"
-                   oninput="updateTableRender()">
+            <div class='mb-6 flex flex-wrap gap-2 items-center text-sm'>
+                <input id='ruleProcessName' placeholder='Имя процесса для авто-правила' class='px-3 py-2 rounded border bg-transparent min-w-72'>
+                <button onclick='saveRuleForName()' class='px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-500 text-white'>Сохранить правило</button>
+                <span class='opacity-70'>Авто-правила применяются при запуске к процессам по имени.</span>
+            </div>
 
-            <input type="number" id="cpu-filter" placeholder="Мин. CPU %" 
-                   class="w-40 px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 transition-all"
-                   oninput="updateTableRender()">
+            <div class='bg-gray-800/90 dark:bg-gray-800 rounded-lg shadow-xl overflow-hidden'>
+                <table class='w-full text-left border-collapse'>
+                    <thead>
+                        <tr class='bg-gray-700 text-teal-300 uppercase text-sm tracking-wider'>
+                            <th class='p-4 w-24'>PID</th>
+                            <th class='p-4'>Имя процесса</th>
+                            <th class='p-4 w-24'>CPU %</th>
+                            <th class='p-4 w-1/2'>Привязка к ядрам (Affinity)</th>
+                        </tr>
+                    </thead>
+                    <tbody id='process-table' class='divide-y divide-gray-700'>
+                        <tr><td colspan='4' class='p-4 text-center text-gray-500'>Загрузка процессов...</td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
 
-        <div class="bg-white dark:bg-gray-800 rounded-3xl shadow-xl overflow-hidden">
-            <table class="w-full text-left border-collapse">
-                <thead>
-                    <tr class="bg-gray-50 dark:bg-gray-700 text-teal-700 dark:text-teal-300 uppercase text-xs tracking-widest">
-                        <th class="p-5 w-24">PID</th>
-                        <th class="p-5">Процесс</th>
-                        <th class="p-5 w-28">CPU %</th>
-                        <th class="p-5">Affinity + Пресеты</th>
-                    </tr>
-                </thead>
-                <tbody id="process-table" class="divide-y divide-gray-100 dark:divide-gray-700"></tbody>
-            </table>
-        </div>
-    </div>
+        <script>
+            let totalCores = 0;
+            let frozenNames = JSON.parse(localStorage.getItem('frozenProcesses')) || [];
+            let presets = {{}};
 
-    <script>
-        let totalCores = 0;
-        let frozenNames = JSON.parse(localStorage.getItem('frozenProcesses')) || [];
-        let allProcesses = [];
-        let appConfig = {};
+            function applyTheme(theme) {{
+                const body = document.getElementById('app-body');
+                if (theme === 'light') {{
+                    body.className = 'bg-gray-100 text-gray-900 font-sans p-8';
+                }} else {{
+                    body.className = 'bg-gray-900 text-gray-100 font-sans p-8';
+                }}
+            }}
 
-        function toggleTheme() {
-            document.documentElement.classList.toggle('dark');
-        }
+            async function setTheme(theme) {{
+                applyTheme(theme);
+                await fetch('/api/theme', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ theme }})
+                }});
+            }}
 
-        async function initData() {
-            try {
-                // Загружаем количество ядер
-                const coresRes = await fetch('/api/cores');
-                const coresData = await coresRes.json();
-                totalCores = coresData.total_cores;
+            function toggleFreeze(name) {{
+                if (frozenNames.includes(name)) frozenNames = frozenNames.filter(n => n !== name);
+                else frozenNames.push(name);
+                localStorage.setItem('frozenProcesses', JSON.stringify(frozenNames));
+                updateProcesses();
+            }}
+
+            function getCheckedCoresForPid(pid) {{
+                const checkboxes = document.querySelectorAll(`input[data-pid="${{pid}}"]:checked`);
+                return Array.from(checkboxes).map(cb => parseInt(cb.getAttribute('data-core')));
+            }}
+
+            async function loadCores() {{
+                const res = await fetch('/api/cores');
+                const data = await res.json();
+                totalCores = data.total_cores;
                 document.getElementById('cores-count').innerText = totalCores;
+            }}
 
-                // Загружаем конфиг (пресеты)
-                const configRes = await fetch('/api/config');
-                appConfig = await configRes.json();
+            async function loadPresets() {{
+                const res = await fetch('/api/presets');
+                presets = await res.json();
+                const sel = document.getElementById('presetSelect');
+                sel.innerHTML = '';
+                Object.keys(presets).forEach(name => {{
+                    const opt = document.createElement('option');
+                    opt.value = name;
+                    opt.textContent = `${{name}} -> [${{(presets[name] || []).join(', ')}}]`;
+                    sel.appendChild(opt);
+                }});
+            }}
 
-                await updateProcesses();
-                setInterval(updateProcesses, 2800); // Чуть чаще
-            } catch (e) {
-                console.error("Ошибка инициализации:", e);
-            }
-        }
-
-        function toggleFreeze(name) {
-            if (frozenNames.includes(name)) {
-                frozenNames = frozenNames.filter(n => n !== name);
-            } else {
-                frozenNames.push(name);
-            }
-            localStorage.setItem('frozenProcesses', JSON.stringify(frozenNames));
-            updateTableRender();
-        }
-
-        async function updateProcesses() {
-            try {
-                const res = await fetch('/api/processes?limit=200');
-                allProcesses = await res.json();
-                updateTableRender();
-            } catch (err) {
-                console.error("Ошибка обновления процессов:", err);
-            }
-        }
-
-        function updateTableRender() {
-            const searchQuery = (document.getElementById('search-input').value || '').toLowerCase().trim();
-            const minCpu = parseFloat(document.getElementById('cpu-filter').value) || 0;
-
-            let filtered = allProcesses.filter(p => {
-                const nameMatch = p.name.toLowerCase().includes(searchQuery);
-                const pidMatch = p.pid.toString().includes(searchQuery);
-                const cpuMatch = p.cpu_percent >= minCpu;
-                return (nameMatch || pidMatch) && cpuMatch;
-            });
-
-            // Сортировка: frozen сверху + по CPU
-            filtered.sort((a, b) => {
-                const aF = frozenNames.includes(a.name) ? 1 : 0;
-                const bF = frozenNames.includes(b.name) ? 1 : 0;
-                if (aF !== bF) return bF - aF;
-                return b.cpu_percent - a.cpu_percent;
-            });
-
-            const tbody = document.getElementById('process-table');
-            tbody.innerHTML = '';
-
-            if (filtered.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="4" class="p-12 text-center text-gray-400">Ничего не найдено</td></tr>`;
-                return;
-            }
-
-            filtered.forEach(p => {
-                const isFrozen = frozenNames.includes(p.name);
-                const tr = document.createElement('tr');
-                tr.className = `process-row ${isFrozen ? 'bg-teal-50 dark:bg-teal-900/30 border-l-4 border-teal-500' : 'hover:bg-gray-50 dark:hover:bg-gray-750'}`;
-
-                // Чекбоксы ядер
-                let coreHtml = '<div class="cores-scroll flex flex-nowrap overflow-x-auto gap-1 pb-2 max-w-[460px]">';
-                for (let i = 0; i < totalCores; i++) {
-                    const checked = p.cpu_affinity.includes(i) ? 'checked' : '';
-                    coreHtml += `
-                        <label class="flex-none inline-flex items-center bg-gray-100 dark:bg-gray-700 px-3 py-1.5 rounded-xl text-xs cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600">
-                            <input type="checkbox" data-pid="${p.pid}" data-name="${p.name}" data-core="${i}" ${checked}
-                                   onchange="changeAffinity(this)" class="mr-1 accent-teal-500">
-                            <span class="font-mono">${i}</span>
-                        </label>`;
-                }
-                coreHtml += '</div>';
-
-                // Пресеты
-                let presetHtml = `<select onchange="applyPreset(this, ${p.pid})" class="text-xs bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-xl px-3 py-2 cursor-pointer focus:ring-1">`;
-                presetHtml += `<option value="">Пресет...</option>`;
-                Object.entries(appConfig.presets || {}).forEach(([name, cores]) => {
-                    presetHtml += `<option value='${JSON.stringify(cores)}'>${name}</option>`;
-                });
-                presetHtml += `</select>`;
-
-                const hasRule = !!(appConfig.auto_apply_rules && appConfig.auto_apply_rules[p.name]);
-                const saveBtn = `<button onclick="saveRule('${p.name}', ${p.pid})" 
-                    class="ml-3 text-xs px-3 py-2 rounded-xl transition-all ${hasRule ? 'bg-teal-100 dark:bg-teal-900 text-teal-700 dark:text-teal-300' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}">
-                    💾 ${hasRule ? '✓' : 'Сохранить правило'}
-                </button>`;
-
-                const freezeIcon = isFrozen ? '❄️ Открепить' : '📌 Закрепить';
-                const freezeClass = isFrozen ? 'text-teal-600 dark:text-teal-400 font-semibold' : 'text-gray-500 hover:text-teal-600 dark:hover:text-teal-400';
-
-                tr.innerHTML = `
-                    <td class="p-5 font-mono text-sm text-gray-500 dark:text-gray-400">${p.pid}</td>
-                    <td class="p-5">
-                        <div class="font-medium">${p.name}</div>
-                        <button onclick="toggleFreeze('${p.name}')" class="text-xs mt-1 ${freezeClass}">${freezeIcon}</button>
-                    </td>
-                    <td class="p-5 font-mono text-teal-600 dark:text-teal-400 font-semibold">${p.cpu_percent}%</td>
-                    <td class="p-5">
-                        <div class="space-y-3">
-                            ${coreHtml}
-                            <div class="flex items-center gap-2 flex-wrap">
-                                ${presetHtml}
-                                ${saveBtn}
-                            </div>
-                        </div>
-                    </td>
-                `;
-                tbody.appendChild(tr);
-            });
-        }
-
-        async function changeAffinity(checkbox) {
-            const pid = parseInt(checkbox.getAttribute('data-pid'));
-            const checkedBoxes = document.querySelectorAll(`input[data-pid="${pid}"]:checked`);
-            const cores = Array.from(checkedBoxes).map(cb => parseInt(cb.getAttribute('data-core')));
-
-            if (cores.length === 0) {
-                alert("Нужно выбрать минимум одно ядро!");
-                checkbox.checked = true;
-                return;
-            }
-            await sendAffinity(pid, cores);
-        }
-
-        async function applyPreset(select, pid) {
-            if (!select.value) return;
-            const cores = JSON.parse(select.value);
-            await sendAffinity(pid, cores);
-
-            // Обновляем чекбоксы
-            const boxes = document.querySelectorAll(`input[data-pid="${pid}"]`);
-            boxes.forEach(box => {
-                const core = parseInt(box.getAttribute('data-core'));
-                box.checked = cores.includes(core);
-            });
-            select.value = "";
-        }
-
-        async function sendAffinity(pid, cores) {
-            try {
-                const resp = await fetch('/api/set_affinity', {
+            async function saveCurrentPreset() {{
+                const name = document.getElementById('presetName').value.trim();
+                if (!name) return alert('Введите имя пресета');
+                const pid = parseInt(prompt('Введите PID процесса, чтобы взять его affinity как пресет:'));
+                if (Number.isNaN(pid)) return;
+                const res = await fetch('/api/processes?limit=1000');
+                const processes = await res.json();
+                const p = processes.find(x => x.pid === pid);
+                if (!p) return alert('Процесс не найден');
+                const cores = (p.cpu_affinity || []).filter(c => Number.isInteger(c));
+                const resp = await fetch('/api/presets', {{
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({pid, cores})
-                });
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ name, cores }})
+                }});
+                if (!resp.ok) {{
+                    const e = await resp.json();
+                    alert(e.detail || 'Ошибка сохранения');
+                    return;
+                }}
+                await loadPresets();
+            }}
 
-                if (!resp.ok) {
-                    const err = await resp.json();
-                    alert(`Ошибка: ${err.detail}`);
-                }
-            } catch (e) {
-                console.error(e);
-            }
-        }
-
-        async function saveRule(name, pid) {
-            const checked = document.querySelectorAll(`input[data-pid="${pid}"]:checked`);
-            const cores = Array.from(checked).map(c => parseInt(c.getAttribute('data-core')));
-
-            if (!cores.length) {
-                alert("Выберите ядра перед сохранением правила");
-                return;
-            }
-
-            try {
-                const resp = await fetch('/api/save_rule', {
+            async function applyPreset() {{
+                const name = document.getElementById('presetSelect').value;
+                const cores = presets[name] || [];
+                if (!cores.length) return alert('У пресета пустой список ядер');
+                const pid = parseInt(prompt('Введите PID процесса для применения пресета:'));
+                if (Number.isNaN(pid)) return;
+                const resp = await fetch('/api/set_affinity', {{
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({name, cores})
-                });
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ pid, cores }})
+                }});
+                if (!resp.ok) {{
+                    const e = await resp.json();
+                    alert(e.detail || 'Ошибка применения');
+                    return;
+                }}
+                updateProcesses();
+            }}
 
-                if (resp.ok) {
-                    if (!appConfig.auto_apply_rules) appConfig.auto_apply_rules = {};
-                    appConfig.auto_apply_rules[name] = cores;
-                    updateTableRender();
-                    console.log(`Правило сохранено для ${name}`);
-                }
-            } catch (e) {
-                console.error(e);
-            }
-        }
+            async function saveRuleForName() {{
+                const name = document.getElementById('ruleProcessName').value.trim();
+                if (!name) return alert('Введите имя процесса');
+                const pid = parseInt(prompt('Введите PID процесса, чтобы взять его affinity как правило:'));
+                if (Number.isNaN(pid)) return;
+                const res = await fetch('/api/processes?limit=1000');
+                const processes = await res.json();
+                const p = processes.find(x => x.pid === pid);
+                if (!p) return alert('Процесс не найден');
+                const cores = (p.cpu_affinity || []).filter(c => Number.isInteger(c));
+                const resp = await fetch('/api/save_rule', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ name, cores }})
+                }});
+                if (!resp.ok) {{
+                    const e = await resp.json();
+                    alert(e.detail || 'Ошибка сохранения');
+                    return;
+                }}
+                alert('Правило сохранено');
+            }}
 
-        // Запуск
-        window.onload = initData;
-    </script>
-</body>
-</html>
+            async function updateProcesses() {{
+                try {{
+                    const q = document.getElementById('searchBox').value || '';
+                    const sortBy = document.getElementById('sortBy').value || 'cpu';
+                    const res = await fetch(`/api/processes?q=${{encodeURIComponent(q)}}&sort_by=${{encodeURIComponent(sortBy)}}`);
+                    let processes = await res.json();
+                    processes.sort((a, b) => {{
+                        const aFrozen = frozenNames.includes(a.name);
+                        const bFrozen = frozenNames.includes(b.name);
+                        if (aFrozen && !bFrozen) return -1;
+                        if (!aFrozen && bFrozen) return 1;
+                        return (b.cpu_percent || 0) - (a.cpu_percent || 0);
+                    }});
+                    const tbody = document.getElementById('process-table');
+                    tbody.innerHTML = '';
+                    processes.forEach(p => {{
+                        const isFrozen = frozenNames.includes(p.name);
+                        const tr = document.createElement('tr');
+                        tr.className = isFrozen ? 'bg-teal-900/20 hover:bg-teal-900/40 transition-colors border-l-4 border-teal-500' : 'hover:bg-gray-750 transition-colors border-l-4 border-transparent';
+                        let coreCheckboxes = '<div class="cores-scroll flex flex-nowrap overflow-x-auto gap-1 pb-2" style="max-width: 450px;">';
+                        for (let i = 0; i < totalCores; i++) {{
+                            const isChecked = (p.cpu_affinity || []).includes(i) ? 'checked' : '';
+                            coreCheckboxes += `
+                                <label class="flex-none inline-flex items-center bg-gray-700 px-2 py-1 rounded text-xs cursor-pointer hover:bg-gray-600 transition-colors border border-gray-600">
+                                    <input type="checkbox" data-pid="${{p.pid}}" data-core="${{i}}" ${{isChecked}} onchange="changeAffinity(this)" class="mr-1 accent-teal-400">
+                                    <span>${{i}}</span>
+                                </label>
+                            `;
+                        }}
+                        coreCheckboxes += '</div>';
+                        const freezeIcon = isFrozen ? '❄️ Открепить' : '📌 Закрепить';
+                        const freezeBtnClass = isFrozen ? 'text-teal-400 font-bold hover:text-teal-300' : 'text-gray-500 hover:text-teal-400';
+                        const freezeBtn = `<button onclick="toggleFreeze('${{String(p.name).replaceAll("'", "\\'")}}')" class="ml-3 text-xs ${{freezeBtnClass}} transition-colors uppercase tracking-wider">${{freezeIcon}}</button>`;
+                        tr.innerHTML = `
+                            <td class='p-4 font-mono text-gray-400'>${{p.pid}}</td>
+                            <td class='p-4 font-semibold text-white'>
+                                <div class='flex flex-col items-start gap-1'>
+                                    <span>${{p.name}}</span>
+                                    ${{freezeBtn}}
+                                </div>
+                            </td>
+                            <td class='p-4 font-mono text-teal-400'>${{p.cpu_percent}}%</td>
+                            <td class='p-4'>${{coreCheckboxes}}</td>
+                        `;
+                        tbody.appendChild(tr);
+                    }});
+                }} catch (err) {{
+                    console.error('Ошибка обновления данных:', err);
+                }}
+            }}
+
+            async function changeAffinity(checkbox) {{
+                const pid = parseInt(checkbox.getAttribute('data-pid'));
+                const cores = getCheckedCoresForPid(pid);
+                if (cores.length === 0) {{
+                    alert('Процесс должен быть привязан хотя бы к одному ядру!');
+                    checkbox.checked = true;
+                    return;
+                }}
+                const response = await fetch('/api/set_affinity', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ pid, cores }})
+                }});
+                if (!response.ok) {{
+                    const errorData = await response.json();
+                    alert(`Ошибка: ${{errorData.detail}}`);
+                    updateProcesses();
+                }}
+            }}
+
+            applyTheme('{theme}');
+            loadCores().then(() => {{
+                loadPresets();
+                updateProcesses();
+                setInterval(updateProcesses, 3000);
+            }});
+        </script>
+    </body>
+    </html>
     """
 
 
 def open_browser():
-    """Открывает браузер после запуска сервера."""
-    time.sleep(2.2)
-    webbrowser.open("http://127.0.0.1:8000")
+    time.sleep(2)
+    webbrowser.open('http://127.0.0.1:8000')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     import multiprocessing
     multiprocessing.freeze_support()
-
     threading.Thread(target=open_browser, daemon=True).start()
-
-    logger.info("Запуск сервера...")
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+    uvicorn.run(app, host='127.0.0.1', port=8000, log_level='info')
