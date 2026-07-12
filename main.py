@@ -249,53 +249,66 @@ def set_affinity(data: AffinityRequest):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
+    """Отдаёт основной HTML-интерфейс."""
     return """
 <!DOCTYPE html>
 <html lang="ru" class="dark">
 <head>
     <meta charset="UTF-8">
     <link rel="icon" href="/favicon.ico" type="image/x-icon">
-    <title>CPU Affinity Web Tool</title>
+    <title>CPU Affinity Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <style>
         .cores-scroll::-webkit-scrollbar { height: 6px; }
         .cores-scroll::-webkit-scrollbar-track { background: transparent; }
         .cores-scroll::-webkit-scrollbar-thumb { background-color: #6b7280; border-radius: 10px; }
         .cores-scroll::-webkit-scrollbar-thumb:hover { background-color: #9ca3af; }
+        .process-row { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
     </style>
 </head>
-<body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans p-8 transition-colors duration-300">
-    <div class="max-w-6xl mx-auto">
-        <header class="mb-6 border-b border-gray-300 dark:border-gray-700 pb-4 flex flex-col md:flex-row justify-between items-center gap-4">
-            <h1 class="text-3xl font-bold text-teal-600 dark:text-teal-400">⚡ CPU Affinity Dashboard</h1>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans p-6 transition-colors duration-300">
+    <div class="max-w-7xl mx-auto">
+        <header class="mb-8 border-b border-gray-300 dark:border-gray-700 pb-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div>
+                <h1 class="text-4xl font-bold text-teal-600 dark:text-teal-400 flex items-center gap-3">
+                    ⚡ CPU Affinity Dashboard
+                </h1>
+                <p class="text-gray-500 dark:text-gray-400 text-sm mt-1">Управление привязкой процессов к ядрам</p>
+            </div>
             <div class="flex items-center gap-4">
-                <div class="text-sm text-gray-600 dark:text-gray-400">Всего ядер: <span id="cores-count" class="font-bold text-gray-900 dark:text-white">...</span></div>
-                <button onclick="toggleTheme()" class="bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 px-3 py-1 rounded shadow text-sm transition-colors border border-gray-300 dark:border-gray-600">
-                    🌓 Тема
+                <div class="text-sm text-gray-600 dark:text-gray-400">
+                    Ядер: <span id="cores-count" class="font-mono font-bold text-gray-900 dark:text-white">...</span>
+                </div>
+                <button onclick="toggleTheme()" 
+                        class="px-4 py-2 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl shadow-sm border border-gray-200 dark:border-gray-600 flex items-center gap-2 text-sm font-medium transition-all">
+                    🌓 Переключить тему
                 </button>
             </div>
         </header>
 
-        <div class="mb-4 flex flex-wrap gap-4 bg-white dark:bg-gray-800 p-4 rounded-lg shadow">
-            <input type="text" id="search-input" placeholder="Поиск по имени или PID..." class="flex-1 min-w-[200px] p-2 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 transition-colors" oninput="updateTableRender()">
-            <input type="number" id="cpu-filter" placeholder="Мин. CPU %" class="w-32 p-2 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 transition-colors" oninput="updateTableRender()">
+        <!-- Фильтры -->
+        <div class="mb-6 flex flex-wrap gap-4 bg-white dark:bg-gray-800 p-5 rounded-2xl shadow">
+            <input type="text" id="search-input" 
+                   placeholder="🔍 Поиск по имени процесса или PID..." 
+                   class="flex-1 min-w-[280px] px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 transition-all"
+                   oninput="updateTableRender()">
+
+            <input type="number" id="cpu-filter" placeholder="Мин. CPU %" 
+                   class="w-40 px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 transition-all"
+                   oninput="updateTableRender()">
         </div>
 
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl overflow-hidden">
+        <div class="bg-white dark:bg-gray-800 rounded-3xl shadow-xl overflow-hidden">
             <table class="w-full text-left border-collapse">
                 <thead>
-                    <tr class="bg-gray-200 dark:bg-gray-700 text-teal-700 dark:text-teal-300 uppercase text-sm tracking-wider">
-                        <th class="p-4 w-20">PID</th>
-                        <th class="p-4">Имя процесса</th>
-                        <th class="p-4 w-24">CPU %</th>
-                        <th class="p-4 w-1/2">Привязка к ядрам (Affinity) & Пресеты</th>
+                    <tr class="bg-gray-50 dark:bg-gray-700 text-teal-700 dark:text-teal-300 uppercase text-xs tracking-widest">
+                        <th class="p-5 w-24">PID</th>
+                        <th class="p-5">Процесс</th>
+                        <th class="p-5 w-28">CPU %</th>
+                        <th class="p-5">Affinity + Пресеты</th>
                     </tr>
                 </thead>
-                <tbody id="process-table" class="divide-y divide-gray-200 dark:divide-gray-700">
-                    <tr>
-                        <td colspan="4" class="p-4 text-center text-gray-500">Загрузка процессов...</td>
-                    </tr>
-                </tbody>
+                <tbody id="process-table" class="divide-y divide-gray-100 dark:divide-gray-700"></tbody>
             </table>
         </div>
     </div>
@@ -306,22 +319,27 @@ def index():
         let allProcesses = [];
         let appConfig = {};
 
-        // Темная/Светлая тема
         function toggleTheme() {
             document.documentElement.classList.toggle('dark');
         }
 
         async function initData() {
-            const coresRes = await fetch('/api/cores');
-            const coresData = await coresRes.json();
-            totalCores = coresData.total_cores;
-            document.getElementById('cores-count').innerText = totalCores;
+            try {
+                // Загружаем количество ядер
+                const coresRes = await fetch('/api/cores');
+                const coresData = await coresRes.json();
+                totalCores = coresData.total_cores;
+                document.getElementById('cores-count').innerText = totalCores;
 
-            const configRes = await fetch('/api/config');
-            appConfig = await configRes.json();
+                // Загружаем конфиг (пресеты)
+                const configRes = await fetch('/api/config');
+                appConfig = await configRes.json();
 
-            updateProcesses();
-            setInterval(updateProcesses, 3000);
+                await updateProcesses();
+                setInterval(updateProcesses, 2800); // Чуть чаще
+            } catch (e) {
+                console.error("Ошибка инициализации:", e);
+            }
         }
 
         function toggleFreeze(name) {
@@ -336,87 +354,89 @@ def index():
 
         async function updateProcesses() {
             try {
-                const res = await fetch('/api/processes');
+                const res = await fetch('/api/processes?limit=200');
                 allProcesses = await res.json();
-                updateTableRender(); // Отрисовка с учетом фильтров
+                updateTableRender();
             } catch (err) {
-                console.error("Ошибка обновления данных:", err);
+                console.error("Ошибка обновления процессов:", err);
             }
         }
 
         function updateTableRender() {
-            const searchQuery = document.getElementById('search-input').value.toLowerCase();
+            const searchQuery = (document.getElementById('search-input').value || '').toLowerCase().trim();
             const minCpu = parseFloat(document.getElementById('cpu-filter').value) || 0;
 
-            // Применяем фильтры
-            let processes = allProcesses.filter(p => {
-                const matchSearch = p.name.toLowerCase().includes(searchQuery) || p.pid.toString().includes(searchQuery);
-                const matchCpu = p.cpu_percent >= minCpu;
-                return matchSearch && matchCpu;
+            let filtered = allProcesses.filter(p => {
+                const nameMatch = p.name.toLowerCase().includes(searchQuery);
+                const pidMatch = p.pid.toString().includes(searchQuery);
+                const cpuMatch = p.cpu_percent >= minCpu;
+                return (nameMatch || pidMatch) && cpuMatch;
             });
 
-            processes.sort((a, b) => {
-                const aFrozen = frozenNames.includes(a.name);
-                const bFrozen = frozenNames.includes(b.name);
-                if (aFrozen && !bFrozen) return -1;
-                if (!aFrozen && bFrozen) return 1;
+            // Сортировка: frozen сверху + по CPU
+            filtered.sort((a, b) => {
+                const aF = frozenNames.includes(a.name) ? 1 : 0;
+                const bF = frozenNames.includes(b.name) ? 1 : 0;
+                if (aF !== bF) return bF - aF;
                 return b.cpu_percent - a.cpu_percent;
             });
 
             const tbody = document.getElementById('process-table');
             tbody.innerHTML = '';
 
-            processes.forEach(p => {
+            if (filtered.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="4" class="p-12 text-center text-gray-400">Ничего не найдено</td></tr>`;
+                return;
+            }
+
+            filtered.forEach(p => {
                 const isFrozen = frozenNames.includes(p.name);
                 const tr = document.createElement('tr');
+                tr.className = `process-row ${isFrozen ? 'bg-teal-50 dark:bg-teal-900/30 border-l-4 border-teal-500' : 'hover:bg-gray-50 dark:hover:bg-gray-750'}`;
 
-                tr.className = isFrozen 
-                    ? "bg-teal-50 dark:bg-teal-900/20 border-l-4 border-teal-500" 
-                    : "hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors border-l-4 border-transparent";
-
-                let coreCheckboxes = '<div class="cores-scroll flex flex-nowrap overflow-x-auto gap-1 pb-2" style="max-width: 420px;">';
-                for(let i = 0; i < totalCores; i++) {
-                    const isChecked = p.cpu_affinity.includes(i) ? 'checked' : '';
-                    coreCheckboxes += `
-                        <label class="flex-none inline-flex items-center bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded text-xs cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors border border-gray-300 dark:border-gray-600">
-                            <input type="checkbox" data-pid="${p.pid}" data-name="${p.name}" data-core="${i}" ${isChecked} onchange="changeAffinity(this)" class="mr-1 accent-teal-500">
-                            <span>${i}</span>
-                        </label>
-                    `;
+                // Чекбоксы ядер
+                let coreHtml = '<div class="cores-scroll flex flex-nowrap overflow-x-auto gap-1 pb-2 max-w-[460px]">';
+                for (let i = 0; i < totalCores; i++) {
+                    const checked = p.cpu_affinity.includes(i) ? 'checked' : '';
+                    coreHtml += `
+                        <label class="flex-none inline-flex items-center bg-gray-100 dark:bg-gray-700 px-3 py-1.5 rounded-xl text-xs cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600">
+                            <input type="checkbox" data-pid="${p.pid}" data-name="${p.name}" data-core="${i}" ${checked}
+                                   onchange="changeAffinity(this)" class="mr-1 accent-teal-500">
+                            <span class="font-mono">${i}</span>
+                        </label>`;
                 }
-                coreCheckboxes += '</div>';
+                coreHtml += '</div>';
 
-                // Выпадающий список пресетов
-                let presetsSelect = `<select onchange="applyPreset(this, ${p.pid})" class="text-xs bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded p-1 ml-1 cursor-pointer">
-                    <option value="">-- Пресет --</option>`;
-                for (const [presetName, cores] of Object.entries(appConfig.presets || {})) {
-                    presetsSelect += `<option value="[${cores.join(',')}]">${presetName}</option>`;
-                }
-                presetsSelect += `</select>`;
+                // Пресеты
+                let presetHtml = `<select onchange="applyPreset(this, ${p.pid})" class="text-xs bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-xl px-3 py-2 cursor-pointer focus:ring-1">`;
+                presetHtml += `<option value="">Пресет...</option>`;
+                Object.entries(appConfig.presets || {}).forEach(([name, cores]) => {
+                    presetHtml += `<option value='${JSON.stringify(cores)}'>${name}</option>`;
+                });
+                presetHtml += `</select>`;
 
-                // Кнопка сохранения правила
-                const hasRule = appConfig.auto_apply_rules && appConfig.auto_apply_rules[p.name];
-                const saveRuleBtn = `<button onclick="saveRule('${p.name}', ${p.pid})" class="ml-2 text-xs ${hasRule ? 'text-teal-600 dark:text-teal-400 font-bold' : 'text-gray-500 hover:text-teal-500'} transition-colors" title="Сохранить текущую привязку">💾 ${hasRule ? 'Сохранено' : 'Сохранить'}</button>`;
+                const hasRule = !!(appConfig.auto_apply_rules && appConfig.auto_apply_rules[p.name]);
+                const saveBtn = `<button onclick="saveRule('${p.name}', ${p.pid})" 
+                    class="ml-3 text-xs px-3 py-2 rounded-xl transition-all ${hasRule ? 'bg-teal-100 dark:bg-teal-900 text-teal-700 dark:text-teal-300' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}">
+                    💾 ${hasRule ? '✓' : 'Сохранить правило'}
+                </button>`;
 
                 const freezeIcon = isFrozen ? '❄️ Открепить' : '📌 Закрепить';
-                const freezeBtnClass = isFrozen ? 'text-teal-600 dark:text-teal-400 font-bold' : 'text-gray-500 hover:text-teal-500';
+                const freezeClass = isFrozen ? 'text-teal-600 dark:text-teal-400 font-semibold' : 'text-gray-500 hover:text-teal-600 dark:hover:text-teal-400';
 
                 tr.innerHTML = `
-                    <td class="p-4 font-mono text-sm text-gray-500 dark:text-gray-400">${p.pid}</td>
-                    <td class="p-4 font-semibold text-gray-800 dark:text-white">
-                        <div class="flex flex-col items-start gap-1">
-                            <span class="break-all">${p.name}</span>
-                            <button onclick="toggleFreeze('${p.name}')" class="text-xs ${freezeBtnClass} transition-colors uppercase tracking-wider">${freezeIcon}</button>
-                        </div>
+                    <td class="p-5 font-mono text-sm text-gray-500 dark:text-gray-400">${p.pid}</td>
+                    <td class="p-5">
+                        <div class="font-medium">${p.name}</div>
+                        <button onclick="toggleFreeze('${p.name}')" class="text-xs mt-1 ${freezeClass}">${freezeIcon}</button>
                     </td>
-                    <td class="p-4 font-mono text-sm text-teal-600 dark:text-teal-400">${p.cpu_percent}%</td>
-                    <td class="p-4">
-                        <div class="flex flex-col gap-2">
-                            ${coreCheckboxes}
-                            <div class="flex items-center">
-                                <span class="text-xs text-gray-500 dark:text-gray-400">Группы: </span>
-                                ${presetsSelect}
-                                ${saveRuleBtn}
+                    <td class="p-5 font-mono text-teal-600 dark:text-teal-400 font-semibold">${p.cpu_percent}%</td>
+                    <td class="p-5">
+                        <div class="space-y-3">
+                            ${coreHtml}
+                            <div class="flex items-center gap-2 flex-wrap">
+                                ${presetHtml}
+                                ${saveBtn}
                             </div>
                         </div>
                     </td>
@@ -427,62 +447,77 @@ def index():
 
         async function changeAffinity(checkbox) {
             const pid = parseInt(checkbox.getAttribute('data-pid'));
-            const checkboxes = document.querySelectorAll(`input[data-pid="${pid}"]:checked`);
-            const cores = Array.from(checkboxes).map(cb => parseInt(cb.getAttribute('data-core')));
+            const checkedBoxes = document.querySelectorAll(`input[data-pid="${pid}"]:checked`);
+            const cores = Array.from(checkedBoxes).map(cb => parseInt(cb.getAttribute('data-core')));
 
             if (cores.length === 0) {
-                alert("Процесс должен быть привязан хотя бы к одному ядру!");
+                alert("Нужно выбрать минимум одно ядро!");
                 checkbox.checked = true;
                 return;
             }
-            await sendAffinityRequest(pid, cores);
+            await sendAffinity(pid, cores);
         }
 
-        async function applyPreset(selectElem, pid) {
-            if (!selectElem.value) return;
-            const cores = JSON.parse(selectElem.value);
-            await sendAffinityRequest(pid, cores);
+        async function applyPreset(select, pid) {
+            if (!select.value) return;
+            const cores = JSON.parse(select.value);
+            await sendAffinity(pid, cores);
 
-            // Визуально обновляем чекбоксы
-            const checkboxes = document.querySelectorAll(`input[data-pid="${pid}"]`);
-            checkboxes.forEach(cb => {
-                const coreIdx = parseInt(cb.getAttribute('data-core'));
-                cb.checked = cores.includes(coreIdx);
+            // Обновляем чекбоксы
+            const boxes = document.querySelectorAll(`input[data-pid="${pid}"]`);
+            boxes.forEach(box => {
+                const core = parseInt(box.getAttribute('data-core'));
+                box.checked = cores.includes(core);
             });
-            selectElem.value = ""; // Сбрасываем выбор селекта
+            select.value = "";
         }
 
-        async function sendAffinityRequest(pid, cores) {
-            const response = await fetch('/api/set_affinity', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ pid, cores })
-            });
+        async function sendAffinity(pid, cores) {
+            try {
+                const resp = await fetch('/api/set_affinity', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({pid, cores})
+                });
 
-            if (!response.ok) {
-                const errorData = await response.json();
-                alert(`Ошибка: ${errorData.detail}`);
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    alert(`Ошибка: ${err.detail}`);
+                }
+            } catch (e) {
+                console.error(e);
             }
         }
 
         async function saveRule(name, pid) {
-            const checkboxes = document.querySelectorAll(`input[data-pid="${pid}"]:checked`);
-            const cores = Array.from(checkboxes).map(cb => parseInt(cb.getAttribute('data-core')));
+            const checked = document.querySelectorAll(`input[data-pid="${pid}"]:checked`);
+            const cores = Array.from(checked).map(c => parseInt(c.getAttribute('data-core')));
 
-            const response = await fetch('/api/save_rule', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, cores })
-            });
+            if (!cores.length) {
+                alert("Выберите ядра перед сохранением правила");
+                return;
+            }
 
-            if (response.ok) {
-                if (!appConfig.auto_apply_rules) appConfig.auto_apply_rules = {};
-                appConfig.auto_apply_rules[name] = cores;
-                updateTableRender(); 
+            try {
+                const resp = await fetch('/api/save_rule', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name, cores})
+                });
+
+                if (resp.ok) {
+                    if (!appConfig.auto_apply_rules) appConfig.auto_apply_rules = {};
+                    appConfig.auto_apply_rules[name] = cores;
+                    updateTableRender();
+                    console.log(`Правило сохранено для ${name}`);
+                }
+            } catch (e) {
+                console.error(e);
             }
         }
 
-        initData();
+        // Запуск
+        window.onload = initData;
     </script>
 </body>
 </html>
