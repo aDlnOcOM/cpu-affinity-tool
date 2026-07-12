@@ -121,29 +121,42 @@ def resource_path(relative_path: str) -> str:
     return os.path.join(base_path, relative_path)
 
 # =======================
-# ИНИЦИАЛИЗАЦИЯ И АВТО-ПРАВИЛА
+# STARTUP EVENT — АВТО-ПРИМЕНЕНИЕ ПРАВИЛ
 # =======================
 
 @app.on_event("startup")
-def apply_saved_rules():
-    logger.info(f"Рабочая директория (Конфиги/Логи): {APP_DIR}")
+async def startup_event():
+    """При старте приложения применяем сохранённые правила."""
+    logger.info(f"Запуск приложения. Рабочая директория: {APP_DIR}")
+    logger.info(f"Количество ядер: {num_cores}")
+
     rules = APP_CONFIG.get("auto_apply_rules", {})
     if not rules:
+        logger.info("Нет сохранённых правил авто-применения")
         return
-    logger.info("Применение сохраненных правил affinity при старте...")
-    for proc in psutil.process_iter(['name']):
+
+    logger.info(f"Применяем {len(rules)} сохранённых правил...")
+    applied_count = 0
+
+    for proc in psutil.process_iter(['name', 'pid']):
         try:
             name = proc.info['name']
             if name in rules:
-                proc.cpu_affinity(rules[name])
-                logger.info(f"Авто-применение: {name} -> {rules[name]}")
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
+                cores = rules[name]
+                if cores:  # Проверяем, что список не пустой
+                    proc.cpu_affinity(cores)
+                    logger.info(f"Авто-применение: {name} (PID {proc.info['pid']}) -> {cores}")
+                    applied_count += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied, Exception) as e:
+            continue  # Тихо пропускаем
+
+    logger.info(f"Авто-применение завершено. Успешно: {applied_count}")
 
 
 # =======================
 # API ЭНДПОИНТЫ
 # =======================
+
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
     return FileResponse(resource_path("favicon.ico"))
@@ -151,26 +164,34 @@ async def favicon():
 
 @app.get("/api/config")
 def get_config_api():
-    """Отдает пресеты и правила для отрисовки интерфейса."""
+    """Возвращает текущие пресеты и правила для фронтенда."""
     return APP_CONFIG
 
 
 @app.post("/api/save_rule")
 def save_rule(data: RuleRequest):
-    """Сохраняет правило авто-применения для процесса."""
+    """Сохраняет новое правило авто-применения."""
+    if not data.cores:
+        raise HTTPException(status_code=400, detail="Список ядер не может быть пустым")
+
     APP_CONFIG.setdefault("auto_apply_rules", {})[data.name] = data.cores
     save_config(APP_CONFIG)
-    logger.info(f"Сохранено правило: {data.name} -> {data.cores}")
-    return {"status": "success", "message": "Правило сохранено"}
+    logger.info(f"Сохранено правило для {data.name}: {data.cores}")
+    return {"status": "success", "message": f"Правило для {data.name} сохранено"}
 
 
 @app.get("/api/cores")
 def get_total_cores():
+    """Возвращает количество логических ядер."""
     return {"total_cores": num_cores}
 
 
 @app.get("/api/processes")
-def get_processes(limit: int = 100):
+def get_processes(limit: int = 150):
+    """
+    Возвращает список процессов с CPU% и affinity.
+    Увеличен лимит + улучшена производительность.
+    """
     proc_list = []
     for proc in psutil.process_iter(['pid', 'name', 'cpu_affinity']):
         try:
@@ -179,39 +200,47 @@ def get_processes(limit: int = 100):
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-    time.sleep(0.1)
+    # Короткая пауза для точного замера CPU
+    time.sleep(0.08)
 
     processes = []
     for proc in proc_list:
         try:
             raw_cpu = proc.cpu_percent(interval=None)
             info = proc.info
-            info['cpu_percent'] = round(raw_cpu / num_cores, 1)
+            info['cpu_percent'] = round(raw_cpu / num_cores if num_cores > 0 else raw_cpu, 1)
+
+            # Нормализация affinity
             if info['cpu_affinity'] is None:
                 info['cpu_affinity'] = list(range(num_cores))
             processes.append(info)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
+    # Сортировка по CPU
     processes = sorted(processes, key=lambda x: x.get('cpu_percent') or 0, reverse=True)[:limit]
     return processes
 
 
 @app.post("/api/set_affinity")
 def set_affinity(data: AffinityRequest):
+    """Устанавливает affinity для процесса."""
+    if not data.cores:
+        raise HTTPException(status_code=400, detail="Должен быть выбран хотя бы один core")
+
     try:
         proc = psutil.Process(data.pid)
         proc.cpu_affinity(data.cores)
-        logger.info(f"Изменен affinity: {proc.name()} (PID: {data.pid}) -> {data.cores}")
-        return {"status": "success", "message": f"Процесс {proc.name()} привязан к ядрам {data.cores}"}
+        logger.info(f"Изменён affinity: {proc.name()} (PID: {data.pid}) -> {data.cores}")
+        return {"status": "success", "message": f"Процесс {proc.name()} привязан к {data.cores}"}
     except psutil.NoSuchProcess:
-        logger.error(f"Процесс {data.pid} не найден")
+        logger.warning(f"Процесс {data.pid} не найден")
         raise HTTPException(status_code=404, detail="Процесс не найден")
     except psutil.AccessDenied:
-        logger.warning(f"Нет прав для изменения {data.pid}")
-        raise HTTPException(status_code=403, detail="Недостаточно прав (запустите от Администратора/Root)")
+        logger.warning(f"Нет прав для PID {data.pid}")
+        raise HTTPException(status_code=403, detail="Запустите от имени администратора/root")
     except Exception as e:
-        logger.error(f"Ошибка изменения affinity: {str(e)}")
+        logger.error(f"Неожиданная ошибка: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 # =======================
