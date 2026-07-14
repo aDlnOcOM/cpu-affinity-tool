@@ -256,6 +256,11 @@ def index():
         <link rel='icon' href='/favicon.ico' type='image/x-icon'>
         <title>CPU Affinity Web Tool</title>
         <script src='https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4'></script>
+
+        <style type="text/tailwindcss">
+            @custom-variant dark (&:where(.dark, .dark *));
+        </style>
+
         <style>
             .cores-scroll::-webkit-scrollbar {{ height: 6px; }}
             .cores-scroll::-webkit-scrollbar-track {{ background: transparent; }}
