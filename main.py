@@ -103,10 +103,6 @@ class PresetRequest(BaseModel):
     cores: List[int]
 
 
-class SearchRequest(BaseModel):
-    query: str = ''
-
-
 def resource_path(relative_path: str) -> str:
     try:
         base_path = sys._MEIPASS
@@ -251,9 +247,10 @@ def set_affinity(data: AffinityRequest):
 @app.get('/', response_class=HTMLResponse)
 def index():
     theme = APP_CONFIG.get('theme', 'dark')
+    html_class = 'dark' if theme == 'dark' else ''
     return f"""
     <!DOCTYPE html>
-    <html lang='ru'>
+    <html lang='ru' class='{html_class}'>
     <head>
         <meta charset='UTF-8'>
         <link rel='icon' href='/favicon.ico' type='image/x-icon'>
@@ -262,55 +259,56 @@ def index():
         <style>
             .cores-scroll::-webkit-scrollbar {{ height: 6px; }}
             .cores-scroll::-webkit-scrollbar-track {{ background: transparent; }}
-            .cores-scroll::-webkit-scrollbar-thumb {{ background-color: #4b5563; border-radius: 10px; }}
+            .cores-scroll::-webkit-scrollbar-thumb {{ background-color: #9ca3af; border-radius: 10px; }}
+            .dark .cores-scroll::-webkit-scrollbar-thumb {{ background-color: #4b5563; }}
             .cores-scroll::-webkit-scrollbar-thumb:hover {{ background-color: #6b7280; }}
         </style>
     </head>
-    <body id='app-body' class='font-sans p-8'>
+    <body id='app-body' class='bg-gray-100 text-gray-900 dark:bg-gray-900 dark:text-gray-100 font-sans p-8 transition-colors duration-300'>
         <div class='max-w-6xl mx-auto'>
-            <header class='mb-6 border-b pb-4 flex flex-wrap gap-3 justify-between items-center'>
+            <header class='mb-6 border-b border-gray-300 dark:border-gray-700 pb-4 flex flex-wrap gap-3 justify-between items-center'>
                 <div>
-                    <h1 class='text-3xl font-bold text-teal-400'>⚡ CPU Affinity Dashboard</h1>
-                    <div class='text-sm opacity-80'>Всего ядер в системе: <span id='cores-count' class='font-bold'>...</span></div>
+                    <h1 class='text-3xl font-bold text-teal-600 dark:text-teal-400'>⚡ CPU Affinity Dashboard</h1>
+                    <div class='text-sm opacity-80 mt-1'>Всего ядер в системе: <span id='cores-count' class='font-bold text-teal-600 dark:text-teal-400'>...</span></div>
                 </div>
                 <div class='flex flex-wrap items-center gap-2'>
-                    <input id='searchBox' oninput='updateProcesses()' placeholder='Поиск: имя, PID, CPU%' class='px-3 py-2 rounded border bg-transparent outline-none min-w-64'>
-                    <select id='sortBy' onchange='updateProcesses()' class='px-3 py-2 rounded border bg-transparent'>
+                    <input id='searchBox' oninput='updateProcesses()' placeholder='Поиск: имя, PID, CPU%' class='px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white outline-none min-w-64 focus:border-teal-500'>
+                    <select id='sortBy' onchange='updateProcesses()' class='px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white'>
                         <option value='cpu'>CPU%</option>
                         <option value='pid'>PID</option>
                         <option value='name'>Имя</option>
                     </select>
-                    <select id='themeSelect' onchange='setTheme(this.value)' class='px-3 py-2 rounded border bg-transparent'>
-                        <option value='dark' {'selected' if theme == 'dark' else ''}>Dark</option>
-                        <option value='light' {'selected' if theme == 'light' else ''}>Light</option>
+                    <select id='themeSelect' onchange='setTheme(this.value)' class='px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white'>
+                        <option value='dark' {'selected' if theme == 'dark' else ''}>Темная тема</option>
+                        <option value='light' {'selected' if theme == 'light' else ''}>Светлая тема</option>
                     </select>
                 </div>
             </header>
 
             <div class='mb-4 flex flex-wrap gap-2 items-center'>
-                <input id='presetName' placeholder='Имя пресета' class='px-3 py-2 rounded border bg-transparent'>
-                <button onclick='saveCurrentPreset()' class='px-3 py-2 rounded bg-teal-600 hover:bg-teal-500 text-white'>Сохранить пресет</button>
-                <select id='presetSelect' class='px-3 py-2 rounded border bg-transparent'></select>
-                <button onclick='applyPreset()' class='px-3 py-2 rounded bg-sky-600 hover:bg-sky-500 text-white'>Применить пресет</button>
+                <input id='presetName' placeholder='Имя новой группы ядер' class='px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white'>
+                <button onclick='saveCurrentPreset()' class='px-4 py-2 rounded bg-teal-600 hover:bg-teal-500 text-white font-medium transition-colors'>Сохранить группу</button>
+                <select id='presetSelect' class='px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white ml-auto'></select>
+                <button onclick='applyPreset()' class='px-4 py-2 rounded bg-sky-600 hover:bg-sky-500 text-white font-medium transition-colors'>Применить к PID</button>
             </div>
 
             <div class='mb-6 flex flex-wrap gap-2 items-center text-sm'>
-                <input id='ruleProcessName' placeholder='Имя процесса для авто-правила' class='px-3 py-2 rounded border bg-transparent min-w-72'>
-                <button onclick='saveRuleForName()' class='px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-500 text-white'>Сохранить правило</button>
-                <span class='opacity-70'>Авто-правила применяются при запуске к процессам по имени.</span>
+                <input id='ruleProcessName' placeholder='Имя процесса (напр. chrome.exe)' class='px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white min-w-72'>
+                <button onclick='saveRuleForName()' class='px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-medium transition-colors'>Сохранить авто-правило</button>
+                <span class='opacity-70 ml-2'>Правила применяются автоматически при старте.</span>
             </div>
 
-            <div class='bg-gray-800/90 dark:bg-gray-800 rounded-lg shadow-xl overflow-hidden'>
+            <div class='bg-white dark:bg-gray-800/90 rounded-lg shadow-xl overflow-hidden border border-gray-200 dark:border-gray-700'>
                 <table class='w-full text-left border-collapse'>
                     <thead>
-                        <tr class='bg-gray-700 text-teal-300 uppercase text-sm tracking-wider'>
+                        <tr class='bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-teal-300 uppercase text-sm tracking-wider'>
                             <th class='p-4 w-24'>PID</th>
                             <th class='p-4'>Имя процесса</th>
                             <th class='p-4 w-24'>CPU %</th>
                             <th class='p-4 w-1/2'>Привязка к ядрам (Affinity)</th>
                         </tr>
                     </thead>
-                    <tbody id='process-table' class='divide-y divide-gray-700'>
+                    <tbody id='process-table' class='divide-y divide-gray-200 dark:divide-gray-700'>
                         <tr><td colspan='4' class='p-4 text-center text-gray-500'>Загрузка процессов...</td></tr>
                     </tbody>
                 </table>
@@ -322,17 +320,13 @@ def index():
             let frozenNames = JSON.parse(localStorage.getItem('frozenProcesses')) || [];
             let presets = {{}};
 
-            function applyTheme(theme) {{
-                const body = document.getElementById('app-body');
-                if (theme === 'light') {{
-                    body.className = 'bg-gray-100 text-gray-900 font-sans p-8';
-                }} else {{
-                    body.className = 'bg-gray-900 text-gray-100 font-sans p-8';
-                }}
-            }}
-
             async function setTheme(theme) {{
-                applyTheme(theme);
+                const html = document.documentElement;
+                if (theme === 'light') {{
+                    html.classList.remove('dark');
+                }} else {{
+                    html.classList.add('dark');
+                }}
                 await fetch('/api/theme', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
@@ -372,16 +366,31 @@ def index():
                 }});
             }}
 
+            function parseCoresInput(input, processes) {{
+                if (input.includes(',')) {{
+                    return input.split(',').map(n => parseInt(n.trim())).filter(n => !Number.isNaN(n));
+                }} else {{
+                    const pid = parseInt(input);
+                    if (Number.isNaN(pid)) return null;
+                    const p = processes.find(x => x.pid === pid);
+                    if (!p) {{ alert('Процесс с таким PID не найден'); return null; }}
+                    return (p.cpu_affinity || []).filter(c => Number.isInteger(c));
+                }}
+            }}
+
             async function saveCurrentPreset() {{
                 const name = document.getElementById('presetName').value.trim();
-                if (!name) return alert('Введите имя пресета');
-                const pid = parseInt(prompt('Введите PID процесса, чтобы взять его affinity как пресет:'));
-                if (Number.isNaN(pid)) return;
+                if (!name) return alert('Введите имя группы ядер');
+
+                const input = prompt('Введите номера ядер через запятую (напр. 0,1,2,3) ИЛИ введите PID процесса, чтобы скопировать его ядра:');
+                if (!input) return;
+
                 const res = await fetch('/api/processes?limit=1000');
                 const processes = await res.json();
-                const p = processes.find(x => x.pid === pid);
-                if (!p) return alert('Процесс не найден');
-                const cores = (p.cpu_affinity || []).filter(c => Number.isInteger(c));
+
+                const cores = parseCoresInput(input, processes);
+                if (!cores || cores.length === 0) return alert('Не удалось определить список ядер');
+
                 const resp = await fetch('/api/presets', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
@@ -393,13 +402,41 @@ def index():
                     return;
                 }}
                 await loadPresets();
+                document.getElementById('presetName').value = '';
+            }}
+
+            async function saveRuleForName() {{
+                const name = document.getElementById('ruleProcessName').value.trim();
+                if (!name) return alert('Введите имя процесса');
+
+                const input = prompt('Введите номера ядер через запятую (напр. 0,1,2,3) ИЛИ введите PID процесса, чтобы скопировать его ядра:');
+                if (!input) return;
+
+                const res = await fetch('/api/processes?limit=1000');
+                const processes = await res.json();
+
+                const cores = parseCoresInput(input, processes);
+                if (!cores || cores.length === 0) return alert('Не удалось определить список ядер');
+
+                const resp = await fetch('/api/save_rule', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ name, cores }})
+                }});
+                if (!resp.ok) {{
+                    const e = await resp.json();
+                    alert(e.detail || 'Ошибка сохранения');
+                    return;
+                }}
+                alert('Правило успешно сохранено');
+                document.getElementById('ruleProcessName').value = '';
             }}
 
             async function applyPreset() {{
                 const name = document.getElementById('presetSelect').value;
                 const cores = presets[name] || [];
-                if (!cores.length) return alert('У пресета пустой список ядер');
-                const pid = parseInt(prompt('Введите PID процесса для применения пресета:'));
+                if (!cores.length) return alert('У группы пустой список ядер');
+                const pid = parseInt(prompt(`Применить группу "${{name}}" к PID:`));
                 if (Number.isNaN(pid)) return;
                 const resp = await fetch('/api/set_affinity', {{
                     method: 'POST',
@@ -414,35 +451,13 @@ def index():
                 updateProcesses();
             }}
 
-            async function saveRuleForName() {{
-                const name = document.getElementById('ruleProcessName').value.trim();
-                if (!name) return alert('Введите имя процесса');
-                const pid = parseInt(prompt('Введите PID процесса, чтобы взять его affinity как правило:'));
-                if (Number.isNaN(pid)) return;
-                const res = await fetch('/api/processes?limit=1000');
-                const processes = await res.json();
-                const p = processes.find(x => x.pid === pid);
-                if (!p) return alert('Процесс не найден');
-                const cores = (p.cpu_affinity || []).filter(c => Number.isInteger(c));
-                const resp = await fetch('/api/save_rule', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ name, cores }})
-                }});
-                if (!resp.ok) {{
-                    const e = await resp.json();
-                    alert(e.detail || 'Ошибка сохранения');
-                    return;
-                }}
-                alert('Правило сохранено');
-            }}
-
             async function updateProcesses() {{
                 try {{
                     const q = document.getElementById('searchBox').value || '';
                     const sortBy = document.getElementById('sortBy').value || 'cpu';
                     const res = await fetch(`/api/processes?q=${{encodeURIComponent(q)}}&sort_by=${{encodeURIComponent(sortBy)}}`);
                     let processes = await res.json();
+
                     processes.sort((a, b) => {{
                         const aFrozen = frozenNames.includes(a.name);
                         const bFrozen = frozenNames.includes(b.name);
@@ -450,35 +465,47 @@ def index():
                         if (!aFrozen && bFrozen) return 1;
                         return (b.cpu_percent || 0) - (a.cpu_percent || 0);
                     }});
+
                     const tbody = document.getElementById('process-table');
                     tbody.innerHTML = '';
+
                     processes.forEach(p => {{
                         const isFrozen = frozenNames.includes(p.name);
                         const tr = document.createElement('tr');
-                        tr.className = isFrozen ? 'bg-teal-900/20 hover:bg-teal-900/40 transition-colors border-l-4 border-teal-500' : 'hover:bg-gray-750 transition-colors border-l-4 border-transparent';
+
+                        const bgClass = isFrozen ? 'bg-amber-50 dark:bg-teal-900/20' : 'bg-white dark:bg-transparent';
+                        const borderClass = isFrozen ? 'border-l-4 border-teal-500' : 'border-l-4 border-transparent';
+                        const hoverClass = isFrozen
+                            ? 'hover:bg-[#f3e5ab] dark:hover:bg-teal-900/60'
+                            : 'hover:bg-[#fdf6e3] dark:hover:bg-gray-900';
+
+                        tr.className = `${{bgClass}} ${{borderClass}} ${{hoverClass}} transition-colors`;
+
                         let coreCheckboxes = '<div class="cores-scroll flex flex-nowrap overflow-x-auto gap-1 pb-2" style="max-width: 450px;">';
                         for (let i = 0; i < totalCores; i++) {{
                             const isChecked = (p.cpu_affinity || []).includes(i) ? 'checked' : '';
                             coreCheckboxes += `
-                                <label class="flex-none inline-flex items-center bg-gray-700 px-2 py-1 rounded text-xs cursor-pointer hover:bg-gray-600 transition-colors border border-gray-600">
-                                    <input type="checkbox" data-pid="${{p.pid}}" data-core="${{i}}" ${{isChecked}} onchange="changeAffinity(this)" class="mr-1 accent-teal-400">
+                                <label class="flex-none inline-flex items-center bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded text-xs cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors border border-gray-300 dark:border-gray-600 text-gray-800 dark:text-gray-200">
+                                    <input type="checkbox" data-pid="${{p.pid}}" data-core="${{i}}" ${{isChecked}} onchange="changeAffinity(this)" class="mr-1 accent-teal-600 dark:accent-teal-400">
                                     <span>${{i}}</span>
                                 </label>
                             `;
                         }}
                         coreCheckboxes += '</div>';
+
                         const freezeIcon = isFrozen ? '❄️ Открепить' : '📌 Закрепить';
-                        const freezeBtnClass = isFrozen ? 'text-teal-400 font-bold hover:text-teal-300' : 'text-gray-500 hover:text-teal-400';
+                        const freezeBtnClass = isFrozen ? 'text-teal-600 dark:text-teal-400 font-bold hover:text-teal-700 dark:hover:text-teal-300' : 'text-gray-500 hover:text-teal-600 dark:hover:text-teal-400';
                         const freezeBtn = `<button onclick="toggleFreeze('${{String(p.name).replaceAll("'", "\\'")}}')" class="ml-3 text-xs ${{freezeBtnClass}} transition-colors uppercase tracking-wider">${{freezeIcon}}</button>`;
+
                         tr.innerHTML = `
-                            <td class='p-4 font-mono text-gray-400'>${{p.pid}}</td>
-                            <td class='p-4 font-semibold text-white'>
+                            <td class='p-4 font-mono text-gray-500 dark:text-gray-400'>${{p.pid}}</td>
+                            <td class='p-4 font-semibold text-gray-900 dark:text-white'>
                                 <div class='flex flex-col items-start gap-1'>
                                     <span>${{p.name}}</span>
                                     ${{freezeBtn}}
                                 </div>
                             </td>
-                            <td class='p-4 font-mono text-teal-400'>${{p.cpu_percent}}%</td>
+                            <td class='p-4 font-mono text-teal-600 dark:text-teal-400'>${{p.cpu_percent}}%</td>
                             <td class='p-4'>${{coreCheckboxes}}</td>
                         `;
                         tbody.appendChild(tr);
@@ -508,7 +535,6 @@ def index():
                 }}
             }}
 
-            applyTheme('{theme}');
             loadCores().then(() => {{
                 loadPresets();
                 updateProcesses();
@@ -527,6 +553,7 @@ def open_browser():
 
 if __name__ == '__main__':
     import multiprocessing
+
     multiprocessing.freeze_support()
     threading.Thread(target=open_browser, daemon=True).start()
     uvicorn.run(app, host='127.0.0.1', port=8000, log_level='info')
